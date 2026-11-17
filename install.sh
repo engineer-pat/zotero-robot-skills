@@ -88,6 +88,16 @@ check() {
           warn "no Datalab API key: run \`uv run $SRC/pdf-convert/pdfc.py setup\` in your own terminal,"
           warn "  and give the key a 30-day spend cap at https://www.datalab.to/app/keys"
         fi ;;
+      zotero)
+        zc="${ZOTERO_ROBOT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/zotero-robot/config.toml}"
+        if python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null || command -v uv >/dev/null; then
+          ok "zotero: TOML reader (python3 >= 3.11, or uv)"
+        else miss "zotero needs python3 >= 3.11, or uv to supply tomli on 3.10"; fi
+        if [ -s "$zc" ]; then ok "zotero config: $zc (\`zot.py doctor\` checks Zotero itself)"
+        else warn "no zotero config: run \`python3 $SRC/zotero/zot.py config init\`, then edit scope and vault path"; fi
+        if [ -n "${ZOTERO_API_KEY:-}" ] || [ -s "${XDG_CONFIG_HOME:-$HOME/.config}/zotero/api_key" ]; then
+          ok "Zotero web API key stored"
+        else warn "no Zotero web API key: reads work; write commands will need \`zot.py setup\`"; fi ;;
       papis)
         if command -v papis >/dev/null; then
           ok "papis $(papis --version 2>/dev/null | awk '{print $NF}')"

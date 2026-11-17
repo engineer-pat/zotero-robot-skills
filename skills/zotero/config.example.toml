@@ -1,0 +1,48 @@
+# zotero-robot config. One copy per machine; it is not synced and holds no secrets.
+#
+# Where it lives (create it with `zot.py config init`, find it with `zot.py config path`):
+#   Linux/macOS  ~/.config/zotero-robot/config.toml
+#   Windows      %APPDATA%\zotero-robot\config.toml
+#   anywhere     set ZOTERO_ROBOT_CONFIG to a full path
+#
+# Paths may use ~ and environment variables. On Windows use forward slashes or
+# single quotes: 'C:\Users\you\Documents\Vault'.
+
+[zotero]
+# The desktop app's local API. Reads need no key. Zotero must be running, with
+# Settings > Advanced > "Allow other applications on this computer to communicate with Zotero".
+local_api = "http://localhost:23119/api"
+# "users/0" is your personal library. A group library is "groups/<group id>".
+library = "users/0"
+# Your numeric userID, for web API writes. `zot.py setup` prints it. 0 = not set.
+user_id = 0
+# Web API key file. Empty means ~/.config/zotero/api_key (%APPDATA%\zotero\api_key on Windows).
+# $ZOTERO_API_KEY overrides it. Never put the key itself in this file.
+api_key_file = ""
+
+[scope]
+# Only these collections (and their subcollections) are ever read or processed.
+# Use names, full paths ("Research/DLTS"), or collection keys from `zot.py collections`.
+collections = ["My Project"]
+# Any collection with one of these names, at any depth, is skipped with everything under it.
+exclude_collections = ["exclude"]
+# Items carrying one of these tags are never converted, and an agent must not read them
+# unless you name the item yourself. Give the tag a colour in Zotero so it shows in the list.
+exclude_tags = ["no-upload"]
+# Items that look unpublished are held until you run `zot.py approve <item key>`.
+hold_item_types = ["manuscript", "report", "document", "thesis"]
+hold_without_public_id = true   # no DOI and no arXiv id
+
+[vault]
+# The notes folder outputs are written into (an Obsidian vault, or any folder).
+path = "~/Documents/MyVault"
+# Windows example:
+# path = 'C:\Users\you\Documents\MyVault'
+# The one subfolder the pipeline owns and may overwrite. Do not edit files in it by hand.
+pipeline_dir = "_zotero-robot"
+
+[convert]
+# pdf-convert preset for batch runs: "text", "standard" or "full".
+preset = "standard"
+# Also attach the converted markdown to the Zotero item. Off: the vault copy is the only one.
+attach_to_zotero = false
