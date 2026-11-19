@@ -48,6 +48,8 @@ pdf-convert, figure-craft), which stay unchanged.
 | 4 | Zotero writes: add by DOI, file into subcollections, optional markdown attachment | to do |
 | 5 | Citation check for LaTeX drafts, reference resolution through OpenAlex, watch list | sample watch prompt is in the README; rest to do |
 | 6 | Pull request upstream: `zotero` skill, README/installer changes, arXiv-source option | to do |
+| 7 | Research to Zotero: shortlist from OpenAlex, open-access PDFs through the web API, paywalled papers through the owner's browser and the Zotero Connector | designed (below) |
+| 8 | Backup: restic snapshots of Zotero, the vault and the zotero-robot config; this machine first, then external SSD, later a NAS | designed (below) |
 
 ## Phase 0: machine setup
 
@@ -120,6 +122,55 @@ and `doctor` reported such a scope as ok. Both now report it with close matches.
 
 First real run, with the owner: `zot.py index --keys <one citekey>` on a single open-access
 paper, check the markdown and equations in Obsidian, then `--limit 3`, then the rest.
+
+## Phase 7 design: research to Zotero
+
+Findings, 2026-11-18:
+
+- The web API can create items and upload files we already have. It cannot fetch a PDF.
+- Connector endpoint `saveAttachmentFromResolver` fetches open-access copies only (methods
+  `oa`, `custom`), never the publisher page.
+- `Zotero.Attachments.addAvailableFile` (Find Full Text) does try the DOI page, but the desktop
+  app does not share the browser's logins. IEEE and AIP use institutional sign-in (SAML) in the
+  browser; the UNM EZproxy (`https://%h.libproxy.unm.edu/%p`, login
+  `https://login.libproxy.unm.edu/login?url=%u`) did not work for IEEE. So a plugin calling
+  Find Full Text would fail for the publishers that matter. Not built.
+- OpenAlex finds a legal open-access copy for 24 of the 39 DOIs in scope (62%), mostly AIP
+  author-choice open access, arXiv and OSTI. 10 of the 15 closed ones are IEEE.
+- Not used, ever: Sci-Hub, LibGen and plugins built on them (zotero-scipdf, zotero-nexus).
+  Also not used: generic "run any JavaScript in Zotero" bridges (cli-anything-zotero).
+
+Flow (nothing is added to Zotero before the owner approves the shortlist):
+
+1. Search with the openalex skill, read abstracts, give a shortlist. The owner picks.
+2. Drop DOIs already in the library (match on DOI, all libraries in config).
+3. Open access: create the item by DOI in the web API into an inbox collection the owner
+   names (e.g. `PhD/AFRL/_inbox`), attach the OpenAlex `best_oa_location.pdf_url` copy,
+   record the source in a note or Extra.
+4. Paywalled: before starting, print the list, the count, and a time estimate (about one
+   paper a minute). Then, in the owner's own Chrome (Claude in Chrome), open each DOI page in
+   the signed-in session, save with the Connector into the inbox, and print progress
+   (`[3/12] saved smith2021, 9 min left`). Stop and hand over on a login page, CAPTCHA, or
+   access-denied page; never retry past one. Daily cap in config. Without the browser
+   extension, print the links for the owner to save.
+5. `zot.py status` reports what arrived and what is still missing; then `index` as usual.
+
+A focused search means a few dozen papers per session, paced. No crawling, no scheduled
+bulk pulls through the institution's access.
+
+## Phase 8 design: backup
+
+- Sizes on the workstation: `~/Zotero/storage` 1.4 GB, `zotero.sqlite` 8 MB, vault 2.9 GB.
+  Zotero file sync uses Zotero storage; the free plan is 300 MB, so check the plan: PDFs past
+  the quota live only on this machine.
+- restic (encrypted, deduplicated). Repository password in a mode-600 file the owner creates
+  in their own terminal. Destinations: a local repository first, then the external SSD, later
+  a NAS, all as repositories of the same backup set.
+- Contents: `~/Zotero` (database, storage, Better BibTeX), the vault, `~/.config/zotero-robot`,
+  the zotero-robot state directory. Zotero locks its database while running: back up
+  `zotero.sqlite.bak` or snapshot while Zotero is closed, and say which.
+- `backup` command: snapshot, `restic check` on a sample, retention policy, a one-line report.
+  Scheduled daily once it has run cleanly by hand.
 
 ## Phase 3 design: paper cards
 
