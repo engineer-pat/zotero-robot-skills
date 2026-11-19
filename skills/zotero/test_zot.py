@@ -411,5 +411,93 @@ class IndexTest(Base):
         self.assertEqual(zot.safe_key("lee2023"), "lee2023")
 
 
+
+class AttachTest(Base):
+    """`attach` against a fake web API and storage server; the local fake plays the synced desktop."""
+
+    def setUp(self):
+        super().setUp()
+        self.web, fake, tmp, web = [], self.fake, self.tmp, None
+        web = self.web
+
+        class W(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                web.append((self.path, dict(self.headers), body))
+                out, code = None, 400
+                if self.path == "/users/42/items":
+                    out, code = {"successful": {"0": {"key": "NEW1"}}, "failed": {}}, 200
+                elif self.path == "/users/42/items/NEW1/file" and body.startswith(b"md5="):
+                    port = self.server.server_address[1]
+                    out, code = {"url": f"http://127.0.0.1:{port}/upload", "contentType": "multipart/form-data",
+                                 "prefix": "PRE", "suffix": "SUF", "uploadKey": "UK"}, 200
+                elif self.path == "/upload":
+                    synced = tmp / "storage" / "NEW1.pdf"
+                    synced.parent.mkdir(exist_ok=True)
+                    synced.write_bytes(body[3:-3])
+                    fake.pdfs["NEW1"] = synced          # Zotero desktop has synced the file down
+                    code = 201
+                elif self.path == "/users/42/items/NEW1/file" and body == b"upload=UK":
+                    code = 204
+                raw = json.dumps(out).encode() if out is not None else b""
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+        self.websrv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), W)
+        threading.Thread(target=self.websrv.serve_forever, daemon=True).start()
+        self.saved = zot.WEB_API, zot.verify_key
+        zot.WEB_API = f"http://127.0.0.1:{self.websrv.server_address[1]}"
+        zot.verify_key = lambda k: {"userID": 42}
+        os.environ["ZOTERO_API_KEY"] = "SECRETKEY123"
+        self.pdf = self.tmp / "download.pdf"
+        self.pdf.write_bytes(b"%PDF-1.7\nbody\n%%EOF\n")
+
+    def tearDown(self):
+        zot.WEB_API, zot.verify_key = self.saved
+        os.environ.pop("ZOTERO_API_KEY", None)
+        self.websrv.shutdown()
+        self.websrv.server_close()
+        super().tearDown()
+
+    def attach(self, *argv, expect=0):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            try:
+                zot.main(["attach", *argv])
+                code = 0
+            except SystemExit as e:
+                code = e.code
+        self.assertEqual(code, expect, out.getvalue())
+        self.assertNotIn("SECRETKEY123", out.getvalue())
+        return out.getvalue()
+
+    def test_uploads_and_verifies(self):
+        out = self.attach("nopdf2019", str(self.pdf), "--wait", "5")
+        self.assertIn("verified on this machine", out)
+        paths = [w[0] for w in self.web]
+        self.assertEqual(paths, ["/users/42/items", "/users/42/items/NEW1/file", "/upload",
+                                 "/users/42/items/NEW1/file"])
+        created = json.loads(self.web[0][2])[0]
+        self.assertEqual((created["parentItem"], created["linkMode"], created["filename"]),
+                         ("A6", "imported_file", "nopdf2019.pdf"))
+        headers = {k.lower(): v for k, v in self.web[2][1].items()}
+        self.assertNotIn("zotero-api-key", headers)      # the key never goes to the storage server
+        self.assertEqual(self.web[2][2], b"PRE" + self.pdf.read_bytes() + b"SUF")
+
+    def test_refusals_send_nothing(self):
+        html = self.tmp / "login.pdf"
+        html.write_text("<html>Sign in</html>")
+        self.assertIn("not a PDF", self.attach("nopdf2019", str(html), expect=1))
+        self.assertIn("already has a PDF", self.attach("smith2021", str(self.pdf), expect=1))
+        self.assertIn("excluded", self.attach("doe2022", str(self.pdf), expect=1))
+        self.assertIn("0 items", self.attach("nobody2000", str(self.pdf), expect=1))
+        self.assertEqual(self.web, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -24,12 +24,12 @@ file, and every item is classified before anything may be sent anywhere:
   pending   submitted for conversion but not collected yet; `fetch-pending`
 
 Commands: config, setup, doctor, collections, items, status, dry-run,
-index, fetch-pending, notes, resolve, record, approve, unapprove.
+index, fetch-pending, notes, resolve, record, attach, approve, unapprove.
 
 Conversion is done by the pdf-convert skill (pdfc.py), called as a separate
 program; its page limit, budget, cache and no-retry rules all still apply. Run `zot.py <command> -h` for options.
 
-The Zotero web API key (for later write commands) is read from
+The Zotero web API key (for write commands such as `attach`) is read from
 $ZOTERO_API_KEY, else the file named in the config. This script never prints it.
 """
 from __future__ import annotations
@@ -44,6 +44,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import datetime
 import urllib.error
 import urllib.parse
@@ -524,6 +525,36 @@ def verify_key(key: str) -> dict | None:
         return None
 
 
+class Web:
+    """Zotero web API, for the few writes zot.py makes. The key is never printed."""
+
+    def __init__(self, cfg: dict):
+        self.key = read_key(cfg)
+        if not self.key:
+            die("no Zotero web API key: run `zot.py setup` in your own terminal")
+        lib = cfg["zotero"]["library"].strip("/")
+        if lib == "users/0":
+            uid = cfg["zotero"].get("user_id") or (verify_key(self.key) or {}).get("userID")
+            if not uid:
+                die("cannot find your Zotero userID: set user_id under [zotero] (`zot.py setup` prints it)")
+            lib = f"users/{uid}"
+        self.lib = lib
+
+    def call(self, method: str, path: str, body: bytes = b"", headers: dict | None = None,
+             url: str | None = None) -> tuple[int, bytes]:
+        """Returns (status, body). With `url` (a storage upload URL) no key is sent."""
+        h = {} if url else {"Zotero-API-Version": "3", "Zotero-API-Key": self.key}
+        h.update(headers or {})
+        req = urllib.request.Request(url or f"{WEB_API}/{self.lib}/{path}", data=body, headers=h, method=method)
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+        except (urllib.error.URLError, OSError) as e:
+            die(f"cannot reach {urllib.parse.urlsplit(req.full_url).netloc} ({getattr(e, 'reason', e)})")
+
+
 def cmd_doctor(args) -> None:
     bad = 0
 
@@ -710,6 +741,79 @@ def finalize(cfg: dict, item: dict, outdir: Path, preset: str, converter: str = 
         f.write(json.dumps({k: meta[k] for k in ("citekey", "item_key", "title", "year", "collections",
                                                  "pages", "cost_usd", "preset", "converted_at")}) + "\n")
     return meta
+
+
+def cmd_attach(args) -> None:
+    """Upload a PDF the user obtained as a stored attachment of an item already in Zotero."""
+    cfg = load_config()
+    pdf = Path(args.pdf)
+    try:
+        data = pdf.read_bytes()
+    except OSError as e:
+        die(f"cannot read {pdf}: {e}")
+    if not data.startswith(b"%PDF-"):
+        die(f"{pdf} is not a PDF (no %PDF- header); a login or viewer page was probably saved instead")
+    hits = lookup(cfg, args.citekey)
+    if len(hits) != 1:
+        die(f"{len(hits)} items have citation key {args.citekey!r}; it must match exactly one")
+    item = hits[0]
+    if item["excluded"]:
+        die(f"{args.citekey} is excluded ({', '.join(item['excluded'])}); attach it in Zotero yourself")
+    if item["pdf"] and not args.force:
+        die(f"{args.citekey} already has a PDF at {item['pdf']}; pass --force to add another")
+
+    web = Web(cfg)
+    name = safe_key(args.citekey) + ".pdf"
+    status, body = web.call("POST", "items", json.dumps([{
+        "itemType": "attachment", "parentItem": item["key"], "linkMode": "imported_file",
+        "title": args.title, "contentType": "application/pdf", "filename": name,
+        "tags": [], "relations": {}}]).encode(),
+        {"Content-Type": "application/json", "Zotero-Write-Token": os.urandom(16).hex()})
+    try:
+        att = json.loads(body)["successful"]["0"]["key"] if status == 200 else None
+    except (ValueError, KeyError, TypeError):
+        att = None
+    if not att:
+        die(f"Zotero did not create the attachment (HTTP {status}): {body[:300].decode('utf-8', 'replace')}")
+
+    def fail(msg: str) -> "NoReturn":  # type: ignore[name-defined]
+        die(f"{msg}. The attachment {att} on {args.citekey} has no file; delete it in Zotero.")
+
+    form = {"Content-Type": "application/x-www-form-urlencoded", "If-None-Match": "*"}
+    status, body = web.call("POST", f"items/{att}/file", urllib.parse.urlencode({
+        "md5": hashlib.md5(data).hexdigest(), "filename": name, "filesize": len(data),
+        "mtime": int(pdf.stat().st_mtime * 1000)}).encode(), form)
+    if status == 413:
+        fail("Zotero storage is full (HTTP 413): free space or upgrade the storage plan")
+    if status != 200:
+        fail(f"upload authorization failed (HTTP {status}: {body[:200].decode('utf-8', 'replace')})")
+    auth = json.loads(body)
+    if not auth.get("exists"):
+        status, _ = web.call("POST", "", auth["prefix"].encode() + data + auth["suffix"].encode(),
+                             {"Content-Type": auth["contentType"]}, url=auth["url"])
+        if status != 201:
+            fail(f"file upload failed (HTTP {status})")
+        status, body = web.call("POST", f"items/{att}/file",
+                                urllib.parse.urlencode({"upload": auth["uploadKey"]}).encode(), form)
+        if status != 204:
+            fail(f"registering the upload failed (HTTP {status})")
+    print(f"uploaded {name} to {args.citekey} (attachment {att}); "
+          f"waiting up to {args.wait}s for Zotero desktop to sync it", flush=True)
+
+    want, api = hashlib.sha256(data).hexdigest(), Local(cfg)
+    deadline = time.monotonic() + args.wait
+    while True:
+        p = api.file_path(att)
+        if p and sha256(p) == want:
+            print(f"verified on this machine: {p}")
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(3)
+    print(f"not on this machine yet: Zotero downloads it at its next sync (or when opened, if Settings > "
+          f"Sync > Download files is 'as needed'). Check later with `zot.py resolve {args.citekey}`.",
+          file=sys.stderr)
+    sys.exit(3)
 
 
 def cmd_record(args) -> None:
@@ -1016,6 +1120,14 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--converter", default="datalab")
     s.add_argument("--preset", default="standard")
     s.set_defaults(fn=cmd_record)
+
+    s = sub.add_parser("attach", help="upload a PDF you obtained to an existing item (web API), then verify it synced")
+    s.add_argument("citekey")
+    s.add_argument("pdf")
+    s.add_argument("--title", default="Full Text PDF", help="attachment title in Zotero")
+    s.add_argument("--wait", type=int, default=120, help="seconds to wait for Zotero desktop to sync it (default 120)")
+    s.add_argument("--force", action="store_true", help="attach even if the item already has a PDF")
+    s.set_defaults(fn=cmd_attach)
 
     for name in ("approve", "unapprove"):
         s = sub.add_parser(name, help=f"{name} held items by item key")

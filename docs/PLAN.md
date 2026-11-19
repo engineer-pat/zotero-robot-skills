@@ -45,7 +45,7 @@ pdf-convert, figure-craft), which stay unchanged.
 | 1 | `zotero` skill, read-only: config, doctor, collections, status, dry-run, resolve, record, approve | verified against Zotero 10.0.7 on 2026-11-18 (results below); 22 tests pass |
 | 2 | Batch conversion: `index` (estimate, confirm, convert, frontmatter, `meta.json`, manifest), `fetch-pending`, generated collection notes | written; 20 tests pass against fakes; **not yet run for real** |
 | 3 | Paper cards (schema, validator), collection overview notes | to do |
-| 4 | Zotero writes: add by DOI, file into subcollections, optional markdown attachment | to do |
+| 4 | Zotero writes: add by DOI, file into subcollections, optional markdown attachment | `attach CITEKEY PDF` done 2026-11-19 (2 tests, not yet run for real); rest to do |
 | 5 | Citation check for LaTeX drafts, reference resolution through OpenAlex, watch list | sample watch prompt is in the README; rest to do |
 | 6 | Pull request upstream: `zotero` skill, README/installer changes, arXiv-source option | to do |
 | 7 | Research to Zotero: shortlist from OpenAlex, open-access PDFs through the web API, paywalled papers through the owner's browser and the Zotero Connector | designed (below) |
@@ -260,6 +260,26 @@ Results, 2026-11-19, Windows 11, Windows PowerShell 5.1, Python 3.13 (`py -3`), 
   cp1252 and died on non-ASCII titles; stdout and stderr are UTF-8 on Windows.
 - `python3` here is the Microsoft Store stub. SKILL.md and README now say to use `py -3` or `uv run`.
 - Tests: 23 pass on Windows (the failures were all the `pdfc_command` quoting).
+
+save-papers-to-zotero review, 2026-11-19, commit `5fe2e34` (no later commits upstream): all
+four scripts read in full (connector import, batch import, ingest, summary note) plus SKILL.md
+and the manifest reference; README, other references and tests skimmed or not read. Network:
+only `127.0.0.1:23119`, the given PDF URL, Crossref and arXiv. No subprocess, eval or cookie
+access. Writes: `saveItems`, `updateSession`, `saveAttachment` only; never edits or deletes.
+Collection is matched by name in `users/0` only and refused if not unique. Minor bugs, not
+safety issues: ingest's retry on a dropped connection never fires (checks `connection_error`,
+gets `zotero_connection_error`); verification unquotes the file URL twice, so a stored name
+with a literal `%` would report `verification_failed`.
+
+It cannot attach a PDF to an item already in the library, and Morath (`ZSRN5L64`) is already
+there with only an HTML snapshot. The two "IEEE Xplore Full-Text PDF:" items hold IEEE's
+`stamp.html` viewer frame, not a PDF. So, decided with the owner: new `zot.py attach CITEKEY
+PDF` (web API upload to the existing item, then waits for desktop sync and checks SHA-256;
+refuses excluded items, non-PDFs, items with a PDF; leaves and names an empty attachment if a
+later step fails). save-papers-to-zotero stays for papers not yet in the library.
+
+Trial, revised: Morath through `attach`; two new closed IEEE papers, chosen by the owner from
+an OpenAlex shortlist, through save-papers-to-zotero into `PhD/AFRL/_inbox` (to create).
 
 Open items from the Linux session: first single-paper conversion not yet run
 (`dengDeepLevelTransient2024` suggested); duplicates to clean up in Zotero (`ochoa...2022a`,

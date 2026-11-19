@@ -51,6 +51,7 @@ These protect unpublished and restricted documents. They are not optional.
 | `items COLLECTION` | Same classification for one collection and its subcollections. |
 | `resolve CITEKEY` | JSON: item key, title, PDF path on disk, output folder, `zotero://` link. Excluded items return no path. |
 | `record CITEKEY` | After converting one paper by hand: frontmatter, `meta.json`, manifest line, so `status` reports `done` (or `stale` if the PDF later changes). |
+| `attach CITEKEY PDF` | Uploads a PDF the user obtained to that existing item as a stored attachment (web API, counts against the user's Zotero storage), then waits for Zotero desktop to sync it and checks its SHA-256. Refuses excluded items, non-PDF files, and items that already have a PDF (`--force`). Exit 3: uploaded, not synced to this machine yet. |
 | `approve KEY...` / `unapprove KEY...` | Release or re-hold items by Zotero item key. |
 | `config [show\|init\|path]` | Show, create or locate the per-machine config. |
 | `setup` | Stores the web API key (hidden input). For the user's own terminal. |
@@ -126,8 +127,23 @@ for every setting, including Windows paths. `zot.py config init` copies it into 
 `zot.py config path` prints where that is. Paths differ between machines, so never copy
 another machine's config without editing `[vault] path`.
 
+## Adding a PDF to an item that has none
+
+For a `no-pdf` item, once the user has a legitimately obtained PDF on disk (their download,
+or one saved from their own signed-in browser session):
+
+```bash
+zot.py attach smith2021 /path/to/download.pdf
+```
+
+Check the file first: a publisher's login or viewer page saved as `.pdf` is refused. Do not
+use this to add a second copy, or for papers not yet in Zotero (that creates new items, which
+is a separate step the user approves). Never delete the temporary download until `attach`
+exits 0 or 3. If it fails after creating the attachment, it names the empty attachment for
+the user to delete in Zotero; do not retry blindly.
+
 ## Not here yet
 
-Write commands (add by DOI, file into subcollections, attach the markdown to the item) are
-planned and will use the web API key. Until then, tell the user what to add or move and let
-them do it in Zotero.
+Other write commands (add by DOI, file into subcollections, attach the markdown to the item)
+are planned and will use the web API key. Until then, tell the user what to add or move and
+let them do it in Zotero.
