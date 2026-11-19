@@ -43,7 +43,7 @@ pdf-convert, figure-craft), which stay unchanged.
 |---|---|---|
 | 0 | Machine setup (below) | to do on the owner's machine |
 | 1 | `zotero` skill, read-only: config, doctor, collections, status, dry-run, resolve, record, approve | written; 11 tests pass against a fake local API; **not yet run against a real Zotero** |
-| 2 | Batch conversion command (`index`): convert ready/stale items, rename to `<citekey>.md`, write `meta.json`, manifest | to do |
+| 2 | Batch conversion: `index` (estimate, confirm, convert, frontmatter, `meta.json`, manifest), `fetch-pending`, generated collection notes | written; 20 tests pass against fakes; **not yet run for real** |
 | 3 | Paper cards (schema, validator), collection overview notes | to do |
 | 4 | Zotero writes: add by DOI, file into subcollections, optional markdown attachment | to do |
 | 5 | Citation check for LaTeX drafts, reference resolution through OpenAlex, watch list | sample watch prompt is in the README; rest to do |
@@ -73,7 +73,7 @@ papers, has subcollections), vault `~/Documents/_Vault101`, key already at
 
 ## Verify against the real Zotero before building further
 
-Phase 1 was written from the documentation and tested only against a fake server. Check, and
+Phases 1 and 2 were written from the documentation and tested only against fake servers. Check, and
 fix `zot.py` plus its tests where reality differs:
 
 1. `collections/<key>/items/top` returns the top-level items of a collection, each with
@@ -86,18 +86,23 @@ fix `zot.py` plus its tests where reality differs:
 5. Linked-file attachments (`linkMode` `linked_file`) resolve to a path.
 6. Group libraries: untested. `library = "groups/<id>"` should work for reads.
 
-## Phase 2 design: `zot.py index [COLLECTION...]`
+## Phase 2 as built: `zot.py index [COLLECTION...]`
 
-- Refuses to run without `--yes` unless it has just printed the dry run and read a
-  confirmation from a terminal. Unattended runs must pass an explicit list of item keys.
-- For each `ready`/`stale` item: call `pdfc.py convert <pdf> -o <outdir>` as a subprocess (do
-  not import it), respect its exit codes (3: still processing, fetch later, never re-convert;
-  4: a guard fired, stop and report), rename the markdown to `<citekey>.md`, fix image links
-  if the rename changes them, then write `meta.json` as `record` does.
-- Appends one line per item to `_zotero-robot/manifest.jsonl` (citekey, item key, title, year,
-  collections, pages, cost, converted_at) for search and for the collection overview notes.
-- Stops on the first error; a rerun skips `done` items, so it is resumable.
-- Tests: a fake `pdfc.py` on PATH plus the existing fake Zotero server.
+- Estimates every `ready`/`stale` item with `pdfc.py convert --dry-run` (sends nothing), prints a
+  table and a total, then asks on a terminal. Without a terminal it exits 4 unless `--yes` is
+  given. Agents show the list to the user and rerun with `--yes` only after a yes.
+- Converts one item at a time with `pdfc.py convert PDF -o <vault>/_zotero-robot/fulltext/<key>
+  --name <key> --preset P`, run as a separate program (`uv run` if available). pdfc's exit codes:
+  0 finalize; 3 record in `pending.json` and continue (status `pending`, never resubmitted,
+  `fetch-pending` collects it); 4 stop the run; other stop the run.
+- Finalize: YAML frontmatter on `<key>.md` (citekey, title, year, `zotero://` link, collections,
+  tag `zotero-robot/fulltext`), `meta.json` (item key, PDF sha256, preset, pages, cost),
+  one line in `manifest.jsonl`.
+- Rewrites `collections/<path>.md`: one table per collection in scope with links to the full
+  text and cards. Excluded items are listed by citekey and title but never linked.
+
+First real run, with the owner: `zot.py index --keys <one citekey>` on a single open-access
+paper, check the markdown and equations in Obsidian, then `--limit 3`, then the rest.
 
 ## Phase 3 design: paper cards
 

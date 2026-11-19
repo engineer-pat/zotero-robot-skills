@@ -21,9 +21,13 @@ file, and every item is classified before anything may be sent anywhere:
             `approve` before it may be processed
   no-pdf    no PDF attachment, or the file is not downloaded on this machine
   no-key    no citation key (Zotero 8+ field, or "Citation Key:" in Extra)
+  pending   submitted for conversion but not collected yet; `fetch-pending`
 
 Commands: config, setup, doctor, collections, items, status, dry-run,
-resolve, record, approve, unapprove. Run `zot.py <command> -h` for options.
+index, fetch-pending, notes, resolve, record, approve, unapprove.
+
+Conversion is done by the pdf-convert skill (pdfc.py), called as a separate
+program; its page limit, budget, cache and no-retry rules all still apply. Run `zot.py <command> -h` for options.
 
 The Zotero web API key (for later write commands) is read from
 $ZOTERO_API_KEY, else the file named in the config. This script never prints it.
@@ -36,7 +40,11 @@ import hashlib
 import json
 import os
 import re
+import shlex
+import shutil
+import subprocess
 import sys
+import datetime
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -68,7 +76,7 @@ DEFAULTS: dict = {
         "hold_without_public_id": True,
     },
     "vault": {"path": "", "pipeline_dir": "_zotero-robot"},
-    "convert": {"preset": "standard", "attach_to_zotero": False},
+    "convert": {"preset": "standard", "attach_to_zotero": False, "pdfc_command": ""},
 }
 
 EXAMPLE_NAME = "config.example.toml"
@@ -149,6 +157,28 @@ def save_approved(keys: set[str]) -> None:
     f = state_file()
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(json.dumps({"items": sorted(keys)}, indent=1) + "\n", encoding="utf-8")
+
+
+def pending_file() -> Path:
+    return config_path().parent / "pending.json"
+
+
+def load_pending() -> dict[str, dict]:
+    try:
+        return json.loads(pending_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def save_pending(p: dict[str, dict]) -> None:
+    f = pending_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(p, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def safe_key(citekey: str) -> str:
+    """Folder and file name for a citation key; the same rule pdfc.py uses for --name."""
+    return re.sub(r"[^\w.-]+", "_", citekey, flags=re.ASCII).strip("._") or "document"
 
 
 # ------------------------------------------------------------- local API
@@ -330,6 +360,7 @@ def gather(cfg: dict, specs: list[str] | None = None) -> list[dict]:
     ex_tags = {t.lower() for t in cfg["scope"]["exclude_tags"]}
     hold_types = {t.lower() for t in cfg["scope"]["hold_item_types"]}
     approved = load_approved()
+    pending = load_pending()
     root = pipeline_root(cfg)
 
     seen: dict[str, dict] = {}
@@ -374,6 +405,9 @@ def gather(cfg: dict, specs: list[str] | None = None) -> list[dict]:
                 row.update(status="no-pdf", reason="no PDF on this machine")
             elif not row["citekey"]:
                 row.update(status="no-key", reason="no citation key")
+            elif row["citekey"] in pending:
+                row.update(status="pending",
+                           reason=f"request {pending[row['citekey']].get('request_id')}; run fetch-pending")
             elif held and key not in approved:
                 row.update(status="held", reason="; ".join(held))
             else:
@@ -381,7 +415,7 @@ def gather(cfg: dict, specs: list[str] | None = None) -> list[dict]:
             if pdf:
                 row["pdf"], row["bytes"] = str(pdf), pdf.stat().st_size
                 if row["status"] == "ready" and root:
-                    meta = root / "fulltext" / row["citekey"] / "meta.json"
+                    meta = root / "fulltext" / safe_key(row["citekey"]) / "meta.json"
                     if meta.exists():
                         try:
                             old = json.loads(meta.read_text(encoding="utf-8")).get("source_sha256")
@@ -391,7 +425,7 @@ def gather(cfg: dict, specs: list[str] | None = None) -> list[dict]:
                         row.update(status="done" if same else "stale",
                                    reason="" if same else "PDF changed since conversion")
         rows.append(row)
-    order = ["ready", "stale", "held", "no-key", "no-pdf", "excluded", "done"]
+    order = ["ready", "stale", "pending", "held", "no-key", "no-pdf", "excluded", "done"]
     rows.sort(key=lambda r: (order.index(r["status"]), (r["citekey"] or r["title"]).lower()))
     return rows
 
@@ -550,7 +584,8 @@ def cmd_status(args) -> None:
         show(send, False) if send else print("  nothing")
         print(f"\nNOT SENT: {len(skip)} items")
         show(skip, False) if skip else print("  nothing")
-        print("\nNothing was sent. Held items need `zot.py approve KEY` first; excluded items are never sent.")
+        print("\nNothing was sent. Held items need `zot.py approve KEY` first; excluded items are never sent.\n"
+              "`zot.py index` estimates the cost of the items above and converts them after confirmation.")
     else:
         show(rows, args.json)
 
@@ -587,7 +622,7 @@ def lookup(cfg: dict, key: str) -> list[dict]:
         out.append({"key": it["key"], "citekey": key, "title": d.get("title", ""),
                     "year": year(d), "id": public_id(d), "excluded": blocked,
                     "pdf": str(pdf) if pdf else None,
-                    "outdir": str(root / "fulltext" / key) if root and not blocked else None,
+                    "outdir": str(root / "fulltext" / safe_key(key)) if root and not blocked else None,
                     "select": f"zotero://select/library/items/{it['key']}"})
     return out
 
@@ -600,9 +635,54 @@ def cmd_resolve(args) -> None:
     print()
 
 
+def now_iso() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def finalize(cfg: dict, item: dict, outdir: Path, preset: str, converter: str = "datalab") -> dict:
+    """After a successful conversion: frontmatter on the markdown, meta.json, manifest line."""
+    stem = safe_key(item["citekey"])
+    md = outdir / f"{stem}.md"
+    if not md.exists():
+        die(f"no converted markdown at {md}")
+    try:
+        conv = json.loads((outdir / f"{stem}.meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        conv = {}
+    meta = {"citekey": item["citekey"], "item_key": item["key"], "title": item.get("title", ""),
+            "year": item.get("year", ""), "collections": item.get("collections", []),
+            "source_pdf": item["pdf"], "source_sha256": sha256(Path(item["pdf"])),
+            "converter": converter, "preset": preset,
+            "pages": conv.get("page_count"), "cost_usd": conv.get("cost_usd"),
+            "request_id": conv.get("request_id"), "cached": conv.get("cached"),
+            "converted_at": now_iso()}
+    front = "\n".join([
+        "---",
+        f"citekey: {json.dumps(item['citekey'])}",
+        f"title: {json.dumps(meta['title'])}",
+        f"year: {json.dumps(meta['year'])}",
+        f"zotero: {json.dumps('zotero://select/library/items/' + item['key'])}",
+        f"collections: {json.dumps(meta['collections'])}",
+        f"converted: {json.dumps(meta['converted_at'][:10])}",
+        f"converter: {json.dumps(converter + ' ' + preset)}",
+        "tags: [zotero-robot/fulltext]",
+        "---", "", ""])
+    body = md.read_text(encoding="utf-8")
+    if body.startswith("---\ncitekey: "):  # ours from an earlier run on this same file
+        body = body.split("\n---\n", 1)[-1].lstrip("\n")
+    md.write_text(front + body, encoding="utf-8")
+    (outdir / "meta.json").write_text(json.dumps(meta, indent=1) + "\n", encoding="utf-8")
+    root = outdir.parent.parent
+    with open(root / "manifest.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({k: meta[k] for k in ("citekey", "item_key", "title", "year", "collections",
+                                                 "pages", "cost_usd", "preset", "converted_at")}) + "\n")
+    return meta
+
+
 def cmd_record(args) -> None:
-    """Write meta.json after a conversion, so status can report done/stale."""
-    hits = lookup(load_config(), args.citekey)
+    """Finalize a conversion done by hand, so status can report done/stale."""
+    cfg = load_config()
+    hits = lookup(cfg, args.citekey)
     if len(hits) != 1:
         die(f"{len(hits)} items have citation key {args.citekey!r}; expected exactly one")
     h = hits[0]
@@ -611,15 +691,229 @@ def cmd_record(args) -> None:
     if not h["pdf"] or not h["outdir"]:
         die("no PDF on this machine, or [vault] path is not set")
     outdir = Path(h["outdir"])
-    if not any(outdir.glob("*.md")):
-        die(f"no converted markdown in {outdir}; convert first")
-    import datetime
-    meta = {"citekey": args.citekey, "item_key": h["key"], "source_pdf": h["pdf"],
-            "source_sha256": sha256(Path(h["pdf"])), "converter": args.converter,
-            "preset": args.preset,
-            "converted_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
-    (outdir / "meta.json").write_text(json.dumps(meta, indent=1) + "\n", encoding="utf-8")
+    if not (outdir / f"{safe_key(args.citekey)}.md").exists():
+        die(f"no {safe_key(args.citekey)}.md in {outdir}; convert first "
+            f"(pdfc.py convert PDF -o {outdir} --name {safe_key(args.citekey)})")
+    finalize(cfg, h, outdir, args.preset, args.converter)
     print(f"recorded {outdir / 'meta.json'}")
+
+
+# ------------------------------------------------------- batch conversion
+
+def pdfc_command(cfg: dict) -> list[str]:
+    custom = cfg["convert"].get("pdfc_command") or ""
+    if custom:
+        return shlex.split(custom) if isinstance(custom, str) else list(custom)
+    script = Path(__file__).resolve().parent.parent / "pdf-convert" / "pdfc.py"
+    if not script.exists():
+        die(f"pdf-convert skill not found at {script}; set [convert] pdfc_command")
+    uv = shutil.which("uv")
+    return [uv, "run", "--quiet", str(script)] if uv else [sys.executable, str(script)]
+
+
+def run_pdfc(cfg: dict, args: list[str], echo: bool = True) -> tuple[int, str]:
+    """Run pdfc.py, echo its output indented, return (exit code, combined output)."""
+    try:
+        proc = subprocess.Popen(pdfc_command(cfg) + args, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, encoding="utf-8")
+    except OSError as e:
+        die(f"cannot run pdf-convert: {e}")
+    lines = []
+    assert proc.stdout is not None
+    with proc.stdout:
+        for line in proc.stdout:
+            lines.append(line)
+            if echo:
+                print("    " + line.rstrip("\n"), flush=True)
+    return proc.wait(), "".join(lines)
+
+
+def estimate(cfg: dict, rows: list[dict], preset: str, root: Path) -> tuple[float, list[dict]]:
+    """pdfc.py --dry-run per item: cost estimates, nothing sent. Drops items over the page limit."""
+    total, ok = 0.0, []
+    for r in rows:
+        rc, out = run_pdfc(cfg, ["convert", r["pdf"], "--dry-run", "--preset", preset,
+                                 "--name", safe_key(r["citekey"]),
+                                 "-o", str(root / "fulltext" / safe_key(r["citekey"]))], echo=False)
+        m = re.search(r"cost: about \$([\d.]+)", out)
+        pages = re.search(r"all (\d+) pages", out)
+        if rc == 4:
+            r["estimate"], r["note"] = None, "over pdf-convert's page limit; convert it on its own"
+            print(f"  skip  {r['citekey']}: {r['note']}")
+            continue
+        if rc != 0:
+            die(f"pdf-convert dry run failed for {r['citekey']}:\n{out}")
+        r["estimate"] = 0.0 if "cached result" in out else float(m.group(1)) if m else None
+        r["pages"] = int(pages.group(1)) if pages else None
+        total += r["estimate"] or 0.0
+        ok.append(r)
+    return total, ok
+
+
+def cmd_index(args) -> None:
+    cfg = load_config()
+    root = pipeline_root(cfg)
+    if root is None:
+        die("[vault] path is not set in the config")
+    if not root.parent.is_dir():
+        die(f"vault folder does not exist: {root.parent}")
+    preset = args.preset or cfg["convert"]["preset"]
+    rows = gather(cfg, args.collection or None)
+    todo = [r for r in rows if r["status"] in ("ready", "stale")]
+    if args.keys:
+        wanted = set(args.keys)
+        known = {r["key"] for r in rows} | {r["citekey"] for r in rows if r["citekey"]}
+        for k in sorted(wanted - known):
+            print(f"  note: {k} is not in scope")
+        for r in rows:
+            if (r["key"] in wanted or r["citekey"] in wanted) and r not in todo:
+                print(f"  note: {r['citekey'] or r['key']} is {r['status']}, not converted")
+        todo = [r for r in todo if r["key"] in wanted or r["citekey"] in wanted]
+    if args.limit:
+        todo = todo[:args.limit]
+    if not todo:
+        print("Nothing to convert.")
+        write_notes(cfg, root)
+        return
+    print(f"Estimating {len(todo)} item(s) with pdf-convert --dry-run ({preset} preset); nothing is sent.")
+    total, todo = estimate(cfg, todo, preset, root)
+    for r in todo:
+        est = "?" if r["estimate"] is None else f"${r['estimate']:.4f}"
+        print(f"  {r['status']:<6} {r['citekey']:<28} {str(r.get('pages') or '?'):>4} pp  {est:>8}  {r['title'][:50]}")
+    print(f"Total: {len(todo)} item(s), about ${total:.2f} at list price.")
+    if not todo:
+        return
+    if not args.yes:
+        if not sys.stdin.isatty():
+            print("Not converting: pass --yes once the user has seen and agreed to this list.", file=sys.stderr)
+            sys.exit(4)
+        if input(f"Convert {len(todo)} item(s) for about ${total:.2f}? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Cancelled; nothing was sent.")
+            return
+    pending = load_pending()
+    done, spent, code = 0, 0.0, 0
+    for i, r in enumerate(todo, 1):
+        outdir = root / "fulltext" / safe_key(r["citekey"])
+        print(f"[{i}/{len(todo)}] {r['citekey']}", flush=True)
+        rc, out = run_pdfc(cfg, ["convert", r["pdf"], "-o", str(outdir), "--preset", preset,
+                                 "--name", safe_key(r["citekey"])])
+        if rc == 0:
+            meta = finalize(cfg, r, outdir, preset)
+            done += 1
+            spent += meta.get("cost_usd") or 0.0
+        elif rc == 3:
+            m = re.search(r"submitted: request (\S+)", out)
+            pending[r["citekey"]] = {"request_id": m.group(1) if m else None, "item_key": r["key"],
+                                     "outdir": str(outdir), "preset": preset, "since": now_iso()}
+            save_pending(pending)
+            print(f"    pending: collect it later with `zot.py fetch-pending` (it is not converted again)")
+            code = 3
+        elif rc == 4:
+            print("Stopped: a pdf-convert guard refused (page limit or budget). Ask the user before changing it.")
+            code = 4
+            break
+        else:
+            print(f"Stopped: pdf-convert failed on {r['citekey']} (exit {rc}).")
+            code = 1
+            break
+    write_notes(cfg, root)
+    print(f"\nConverted {done} of {len(todo)}; reported cost ${spent:.4f}."
+          + (f" Pending: {sum(1 for _ in pending)}." if pending else ""))
+    if code:
+        sys.exit(code)
+
+
+def cmd_fetch_pending(args) -> None:
+    cfg = load_config()
+    root = pipeline_root(cfg)
+    pending = load_pending()
+    if not pending:
+        print("Nothing pending.")
+        return
+    code = 0
+    for ck, p in sorted(pending.items()):
+        if not p.get("request_id"):
+            print(f"{ck}: no request id was recorded; check `pdfc.py usage` and convert it by hand")
+            continue
+        print(f"{ck}: fetching request {p['request_id']}", flush=True)
+        rc, _ = run_pdfc(cfg, ["fetch", p["request_id"], "-o", p["outdir"]])
+        if rc == 0:
+            hits = [h for h in lookup(cfg, ck) if h["key"] == p["item_key"]]
+            if hits and hits[0]["pdf"]:
+                finalize(cfg, hits[0], Path(p["outdir"]), p.get("preset", "standard"))
+            del pending[ck]
+            save_pending(pending)
+        elif rc == 3:
+            print("    still processing; try again later")
+            code = 3
+        else:
+            print(f"    fetch failed (exit {rc}); left in the pending list")
+            code = 1
+    if root:
+        write_notes(cfg, root)
+    sys.exit(code)
+
+
+# --------------------------------------------------------- vault notes
+
+def note_name(path: str) -> str:
+    return re.sub(r'[\\:*?"<>|]+', "_", path.replace("/", " - ")).strip() or "collection"
+
+
+def write_notes(cfg: dict, root: Path) -> None:
+    """One generated note per collection in scope, plus a README for the folder."""
+    tree = Tree(Local(cfg).get("collections"))
+    scoped: list[str] = []
+    for spec in cfg["scope"]["collections"]:
+        for k in tree.descendants(tree.resolve(spec)):
+            if k not in scoped:
+                scoped.append(k)
+    banned = tree.excluded(cfg["scope"]["exclude_collections"])
+    rows = gather(cfg)
+    by_path: dict[str, list[dict]] = {tree.path(k): [] for k in scoped if k not in banned}
+    for r in rows:
+        for c in r["collections"]:
+            if c in by_path:
+                by_path[c].append(r)
+    outdir = root / "collections"
+    outdir.mkdir(parents=True, exist_ok=True)
+    rel = root.name
+    for path, items in by_path.items():
+        lines = ["---", f"zotero_collection: {json.dumps(path)}", f"generated: {json.dumps(now_iso()[:10])}",
+                 "tags: [zotero-robot/collection]", "---", "",
+                 f"# {path.split('/')[-1]}", "",
+                 "Generated by zotero-robot from Zotero; edits here are overwritten.", ""]
+        if not items:
+            lines.append("No items directly in this collection.")
+        else:
+            lines += ["| Paper | Year | Title | Status | Card | Zotero |", "|---|---|---|---|---|---|"]
+            for r in sorted(items, key=lambda r: (r["citekey"] or r["title"]).lower()):
+                ck = r["citekey"]
+                sk = safe_key(ck) if ck else ""
+                paper = f"[[{rel}/fulltext/{sk}/{sk}\\|{ck}]]" if ck and r["status"] == "done" else (ck or "-")
+                card = f"[[{rel}/cards/{sk}\\|card]]" if ck and (root / "cards" / f"{sk}.md").exists() else ""
+                title = r["title"].replace("|", "/")
+                link = f"[open](zotero://select/library/items/{r['key']})"
+                lines.append(f"| {paper} | {r['year']} | {title} | {r['status']} | {card} | {link} |")
+        (outdir / f"{note_name(path)}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    readme = root / "README.md"
+    if not readme.exists():
+        readme.write_text(
+            "# _zotero-robot\n\nGenerated by the zotero-robot skills. Files here are rewritten by later\n"
+            "runs, so do not edit them; write your own notes elsewhere and link here.\n\n"
+            "- `fulltext/<citekey>/`: converted papers with figures\n"
+            "- `cards/<citekey>.md`: one structured summary per paper\n"
+            "- `collections/`: one generated note per Zotero collection in scope\n"
+            "- `digests/`: results of scheduled checks\n", encoding="utf-8")
+
+
+def cmd_notes(args) -> None:
+    cfg = load_config()
+    root = pipeline_root(cfg)
+    if root is None:
+        die("[vault] path is not set in the config")
+    write_notes(cfg, root)
+    print(f"wrote collection notes in {root / 'collections'}")
 
 
 def cmd_approve(args) -> None:
@@ -656,6 +950,18 @@ def main(argv: list[str] | None = None) -> None:
         s.add_argument("collection", nargs="*", help="default: the collections in the config")
         s.add_argument("--json", action="store_true")
         s.set_defaults(fn=cmd_status)
+
+    s = sub.add_parser("index", help="estimate, confirm, then convert ready/stale items into the vault")
+    s.add_argument("collection", nargs="*", help="default: the collections in the config")
+    s.add_argument("--keys", nargs="+", metavar="KEY", help="only these item keys or citation keys")
+    s.add_argument("--limit", type=int, help="convert at most this many")
+    s.add_argument("--preset", choices=["text", "standard", "full"], help="default: [convert] preset")
+    s.add_argument("--yes", action="store_true", help="skip the prompt (only after the user agreed to the list)")
+    s.set_defaults(fn=cmd_index)
+
+    sub.add_parser("fetch-pending", help="collect conversions that outlived pdf-convert's wait"
+                   ).set_defaults(fn=cmd_fetch_pending)
+    sub.add_parser("notes", help="rewrite the generated collection notes in the vault").set_defaults(fn=cmd_notes)
 
     s = sub.add_parser("resolve", help="citation key -> item key, PDF path, Zotero link")
     s.add_argument("citekey")

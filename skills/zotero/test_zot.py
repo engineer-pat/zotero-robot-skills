@@ -18,6 +18,47 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import zot  # noqa: E402
 
 
+FAKE_PDFC = r"""
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+log = Path(os.environ["FAKE_PDFC_LOG"])
+plan = json.loads(os.environ.get("FAKE_PDFC_PLAN", "{}"))
+def opt(name, default=None):
+    return args[args.index(name) + 1] if name in args else default
+def write(out, name, rid):
+    out.mkdir(parents=True, exist_ok=True)
+    (out / f"{name}.md").write_text(f"# {name}\n\n![](_page_1_Figure_0.jpeg)\nbody\n")
+    (out / "_page_1_Figure_0.jpeg").write_bytes(b"img")
+    (out / f"{name}.meta.json").write_text(json.dumps({"page_count": 12, "cost_usd": 0.048, "request_id": rid}))
+cmd = args[0]
+with log.open("a") as f:
+    f.write(json.dumps(args) + "\n")
+if cmd == "convert":
+    name = opt("--name")
+    what = plan.get(name, "ok")
+    if "--dry-run" in args:
+        if what == "toolong":
+            print("refused: 400 pages is over the per-call limit", file=sys.stderr); sys.exit(4)
+        print(f"{name}.pdf: all 12 pages; mode balanced, images; formats md")
+        print("cost: about $0.0480 (list price); 30-day spend $0.0000 of $5.00 budget")
+        sys.exit(0)
+    if what == "pending":
+        print(f"submitted: request R-{name}", file=sys.stderr)
+        print("still processing after 600s.", file=sys.stderr); sys.exit(3)
+    if what == "refuse":
+        print("refused: over the budget", file=sys.stderr); sys.exit(4)
+    if what == "fail":
+        print("conversion failed", file=sys.stderr); sys.exit(1)
+    write(Path(opt("-o")), name, f"R-{name}"); print("pages converted: 12"); sys.exit(0)
+if cmd == "fetch":
+    rid = args[1]
+    if plan.get("fetch") == "pending":
+        sys.exit(3)
+    write(Path(opt("-o")), rid[2:], rid); sys.exit(0)
+"""
+
+
 def col(key, name, parent=None, n=0):
     return {"key": key, "data": {"name": name, "parentCollection": parent or False}, "meta": {"numItems": n}}
 
@@ -104,7 +145,7 @@ def serve(fake):
     return srv
 
 
-class ZotTest(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.fake = Fake(self.tmp)
@@ -134,6 +175,8 @@ class ZotTest(unittest.TestCase):
             zot.main(list(argv))
         return out.getvalue()
 
+
+class ZotTest(Base):
     def test_classification(self):
         r = self.rows()
         self.assertEqual(r["A1"]["status"], "ready")
@@ -232,6 +275,111 @@ class ZotTest(unittest.TestCase):
             zot.gather(zot.load_config())
         self.assertIn("Is the Zotero desktop app running", err.getvalue())
         self.srv = serve(self.fake)
+
+
+class IndexTest(Base):
+    def setUp(self):
+        super().setUp()
+        fake = self.tmp / "fake_pdfc.py"
+        fake.write_text(FAKE_PDFC)
+        self.log = self.tmp / "pdfc.log"
+        os.environ["FAKE_PDFC_LOG"] = str(self.log)
+        os.environ["FAKE_PDFC_PLAN"] = "{}"
+        with open(self.cfgfile, "a", encoding="utf-8") as f:
+            f.write(f'[convert]\npdfc_command = "{sys.executable} {fake}"\n')
+        self.root = self.vault / "_zotero-robot"
+
+    def calls(self, kind="convert", dry=False):
+        if not self.log.exists():
+            return []
+        out = [json.loads(l) for l in self.log.read_text().splitlines()]
+        return [a for a in out if a[0] == kind and (("--dry-run" in a) == dry)]
+
+    def index(self, *extra, expect=0):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            try:
+                zot.main(["index", *extra])
+                code = 0
+            except SystemExit as e:
+                code = e.code
+        self.assertEqual(code, expect, out.getvalue())
+        return out.getvalue()
+
+    def test_refuses_without_confirmation(self):
+        out = self.index(expect=4)                      # stdin is not a terminal under unittest
+        self.assertIn("Total: 2 item(s), about $0.10", out)
+        self.assertEqual(self.calls(), [])              # estimates only, nothing converted
+        self.assertEqual(len(self.calls(dry=True)), 2)
+
+    def test_converts_ready_items_only(self):
+        out = self.index("--yes")
+        sent = sorted(a[a.index("--name") + 1] for a in self.calls())
+        self.assertEqual(sent, ["lee2023", "smith2021"])  # held, excluded, no-key, no-pdf never sent
+        md = (self.root / "fulltext" / "smith2021" / "smith2021.md").read_text()
+        self.assertTrue(md.startswith('---\ncitekey: "smith2021"\n'))
+        self.assertIn('zotero: "zotero://select/library/items/A1"', md)
+        self.assertIn("![](_page_1_Figure_0.jpeg)", md)   # figure links untouched
+        meta = json.loads((self.root / "fulltext" / "smith2021" / "meta.json").read_text())
+        self.assertEqual((meta["pages"], meta["cost_usd"], meta["item_key"]), (12, 0.048, "A1"))
+        self.assertEqual(len((self.root / "manifest.jsonl").read_text().splitlines()), 2)
+        self.assertIn("Converted 2 of 2", out)
+        r = self.rows()
+        self.assertEqual((r["A1"]["status"], r["A5"]["status"]), ("done", "done"))
+        self.index("--yes")                              # second run: nothing left, nothing sent again
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_collection_notes(self):
+        self.index("--yes")
+        note = (self.root / "collections" / "AFRL Research.md").read_text()
+        self.assertIn("[[_zotero-robot/fulltext/smith2021/smith2021\\|smith2021]]", note)
+        self.assertIn("| doe2022 | 2021 | Tagged draft | excluded |", note)   # listed, never linked
+        sub = (self.root / "collections" / "AFRL Research - DLTS.md").read_text()
+        self.assertIn("lee2023", sub)
+        self.assertFalse((self.root / "collections" / "AFRL Research - exclude.md").exists())
+        self.assertTrue((self.root / "README.md").exists())
+
+    def test_keys_and_limit(self):
+        self.index("--yes", "--keys", "lee2023", "lab2020")
+        self.assertEqual([a[a.index("--name") + 1] for a in self.calls()], ["lee2023"])
+        self.index("--yes", "--limit", "1")
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_pending_is_never_converted_twice(self):
+        os.environ["FAKE_PDFC_PLAN"] = json.dumps({"smith2021": "pending"})
+        self.index("--yes", expect=3)
+        self.assertEqual(self.rows()["A1"]["status"], "pending")
+        self.assertEqual(zot.load_pending()["smith2021"]["request_id"], "R-smith2021")
+        self.index("--yes")                              # rerun skips the pending item
+        self.assertEqual(sum(1 for a in self.calls() if "smith2021" in a), 1)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
+            zot.main(["fetch-pending"])
+        self.assertEqual(e.exception.code, 0)
+        self.assertEqual(self.calls("fetch")[0][1], "R-smith2021")
+        self.assertEqual(self.rows()["A1"]["status"], "done")
+        self.assertEqual(zot.load_pending(), {})
+
+    def test_guard_stops_the_run(self):
+        os.environ["FAKE_PDFC_PLAN"] = json.dumps({"lee2023": "refuse"})
+        out = self.index("--yes", expect=4)
+        self.assertIn("guard refused", out)
+        self.assertEqual(len(self.calls()), 1)           # lee2023 sorts first; smith2021 never sent
+
+    def test_failure_stops_the_run(self):
+        os.environ["FAKE_PDFC_PLAN"] = json.dumps({"lee2023": "fail"})
+        self.index("--yes", expect=1)
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_over_page_limit_is_skipped_at_estimate(self):
+        os.environ["FAKE_PDFC_PLAN"] = json.dumps({"lee2023": "toolong"})
+        out = self.index("--yes")
+        self.assertIn("over pdf-convert's page limit", out)
+        self.assertEqual([a[a.index("--name") + 1] for a in self.calls()], ["smith2021"])
+
+    def test_safe_key_matches_pdfc(self):
+        self.assertEqual(zot.safe_key("smith:2021/ab"), "smith_2021_ab")
+        self.assertEqual(zot.safe_key("lee2023"), "lee2023")
 
 
 if __name__ == "__main__":

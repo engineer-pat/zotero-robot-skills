@@ -42,15 +42,19 @@ These protect unpublished and restricted documents. They are not optional.
 | `collections` | The collection tree with keys, item counts, and which parts are in scope or excluded. |
 | `status [COLLECTION...]` | Classifies every item in scope (or in the named collections). `--json` for programs. |
 | `dry-run [COLLECTION...]` | What a conversion run would send, and what it would skip and why. Sends nothing. |
+| `index [COLLECTION...]` | Estimates each `ready`/`stale` item with pdf-convert's dry run, asks, then converts them one by one into the vault, adds frontmatter, writes `meta.json` and a manifest line, and refreshes the collection notes. `--keys`, `--limit`, `--preset`, `--yes`. |
+| `fetch-pending` | Collects conversions that outlived pdf-convert's wait. Never re-submits them. |
+| `notes` | Rewrites the generated collection notes in the vault. |
 | `items COLLECTION` | Same classification for one collection and its subcollections. |
 | `resolve CITEKEY` | JSON: item key, title, PDF path on disk, output folder, `zotero://` link. Excluded items return no path. |
-| `record CITEKEY` | After converting: writes `meta.json` so `status` reports `done`, or `stale` if the PDF later changes. |
+| `record CITEKEY` | After converting one paper by hand: frontmatter, `meta.json`, manifest line, so `status` reports `done` (or `stale` if the PDF later changes). |
 | `approve KEY...` / `unapprove KEY...` | Release or re-hold items by Zotero item key. |
 | `config [show\|init\|path]` | Show, create or locate the per-machine config. |
 | `setup` | Stores the web API key (hidden input). For the user's own terminal. |
 
-Statuses: `ready`, `done`, `stale`, `held`, `excluded`, `no-pdf` (no PDF attachment, or the
-file is not downloaded on this machine), `no-key` (no citation key).
+Statuses: `ready`, `done`, `stale`, `pending` (submitted, not collected yet), `held`,
+`excluded`, `no-pdf` (no PDF attachment, or the file is not downloaded on this machine),
+`no-key` (no citation key).
 
 A collection can be named by key, by name, or by path (`AFRL Research/DLTS`). A name that
 matches two collections is refused; use the path or key.
@@ -64,24 +68,29 @@ zot.py resolve smith2021                 # -> "pdf": "/…/Smith 2021.pdf", "out
 1. If `excluded` is not empty, stop (rule 2).
 2. If `<outdir>/<citekey>.md` exists and `status` says `done`, read that. List the headings
    first (`grep -n '^#' file.md`) and read the sections you need.
-3. Otherwise convert with the pdf-convert skill, into the output folder, then record it:
+3. Otherwise convert just that paper, after telling the user the cost:
 
    ```bash
-   pdfc.py convert "<pdf>" -o "<outdir>" --dry-run     # cost first
-   pdfc.py convert "<pdf>" -o "<outdir>"
-   zot.py record smith2021 --preset standard
+   zot.py index --keys smith2021            # shows the estimate; add --yes once the user agrees
    ```
 
-   pdf-convert names its output after the PDF file. Rename the markdown to `<citekey>.md` so
-   notes can link to it by citation key.
+   Files are named after the citation key (`<outdir>/smith2021.md`), so notes can link to them.
 
 ## Converting a collection
 
-1. `zot.py dry-run "Collection Name"` and show the user the whole output.
-2. Resolve held items with the user; `approve` the ones they clear.
-3. After the user says yes, convert the `ready` and `stale` items one at a time as above.
-   pdf-convert's page limit and 30-day budget still apply; if one fires, stop and ask.
-4. Finish with `zot.py status` and report counts and what was spent (`pdfc.py usage`).
+1. `zot.py dry-run "Collection Name"`, and show the user the whole output.
+2. Resolve held items with the user; `approve` only the ones they clear.
+3. `zot.py index "Collection Name"` prints a cost estimate per item and a total, then stops
+   (in an agent session there is no terminal to answer its prompt). Show the user the list and
+   the total. Only after they agree, run the same command with `--yes`.
+4. `index` stops on the first failure and when a pdf-convert guard refuses (page limit or
+   30-day budget). Report it and ask; do not raise a guard yourself. A rerun skips everything
+   already `done`, so it is safe to repeat. An item over the page limit is skipped at the
+   estimate; convert it separately with the user's agreement (`pdfc.py convert ... --max-pages N`,
+   then `zot.py record`).
+5. Exit code 3 means some conversions are still processing at Datalab. Run
+   `zot.py fetch-pending` later; never convert those items again.
+6. Finish with `zot.py status` and report what was converted and what it cost.
 
 ## Where output goes
 
