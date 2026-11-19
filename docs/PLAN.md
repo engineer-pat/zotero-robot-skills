@@ -159,6 +159,17 @@ Flow (nothing is added to Zotero before the owner approves the shortlist):
    extension, print the links for the owner to save.
 5. `zot.py status` reports what arrived and what is still missing; then `index` as usual.
 
+Sign-in, for step 4:
+
+- Credentials never go to the agent: no password manager access, no typing passwords. UNM
+  sign-in needs the owner's second factor anyway.
+- The pre-run list groups papers by publisher and flags which need an institutional sign-in
+  in that browser, so the owner signs in to each once before the loop starts. Known so far:
+  IEEE Xplore (Institutional Sign In > University of New Mexico) always needs it. Add
+  publishers to this list as runs find them (AIP, APS, Springer, Elsevier: to confirm).
+- Sessions last hours to days. If one expires mid-run, stop at the sign-in page with
+  progress saved, ask the owner to sign in, then resume from the next unsaved paper.
+
 Keep the browser step cheap in tokens (Pro plan): read pages as text, not screenshots; save
 with the Connector shortcut (Ctrl+Shift+S) rather than clicking through; confirm each save
 with `zot.py` against the local API rather than by looking. Aim for 2-3 short tool calls per
