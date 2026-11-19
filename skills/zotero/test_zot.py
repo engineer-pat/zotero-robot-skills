@@ -223,6 +223,10 @@ class ZotTest(Base):
             self.assertIn(k, not_sent)
         self.assertIn("Nothing was sent", out)
 
+    def test_long_citekey_keeps_year_apart(self):
+        self.fake.items["C1"][0]["data"]["citationKey"] = "alsaadDCCharacteristicsDynamic2024"
+        self.assertIn("alsaadDCCharacteristicsDynamic2024  2021", self.run_cli("status"))
+
     def test_resolve(self):
         d = json.loads(self.run_cli("resolve", "smith2021"))
         self.assertEqual(d["key"], "A1")

@@ -456,10 +456,11 @@ def show(rows: list[dict], as_json: bool) -> None:
         json.dump(rows, sys.stdout, indent=1)
         print()
         return
+    width = max((len(r["citekey"] or "-") for r in rows), default=0) + 2  # keys run to 40+ chars
     for r in rows:
         title = r["title"] if len(r["title"]) <= 56 else r["title"][:55] + "…"
         note = f"  ({r['reason']})" if r["reason"] else ""
-        print(f"{r['status']:<9}{r['key']:<10}{(r['citekey'] or '-'):<28}{r['year']:<6}{title}{note}")
+        print(f"{r['status']:<9}{r['key']:<10}{(r['citekey'] or '-'):<{width}}{r['year']:<6}{title}{note}")
     counts: dict[str, int] = {}
     for r in rows:
         counts[r["status"]] = counts.get(r["status"], 0) + 1
