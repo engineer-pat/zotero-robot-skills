@@ -146,7 +146,10 @@ Flow (nothing is added to Zotero before the owner approves the shortlist):
 2. Drop DOIs already in the library (match on DOI, all libraries in config).
 3. Open access: create the item by DOI in the web API into an inbox collection the owner
    names (e.g. `PhD/AFRL/_inbox`), attach the OpenAlex `best_oa_location.pdf_url` copy,
-   record the source in a note or Extra.
+   record the source in a note or Extra. Only repository copies (arXiv, OSTI, NASA NTRS,
+   PubMed Central) download from a script; Wiley and AIP answer a script with a Cloudflare
+   challenge even for open-access PDFs (checked 2026-11-18), so publisher-hosted open access
+   goes through step 4 with the paywalled papers.
 4. Paywalled: before starting, print the list, the count, and a time estimate (about one
    paper a minute). Then, in the owner's own Chrome (Claude in Chrome), open each DOI page in
    the signed-in session, save with the Connector into the inbox, and print progress
