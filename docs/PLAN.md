@@ -300,8 +300,14 @@ Step 7 trial, 2026-11-19 (Chrome 1 connected, IEEE Xplore through UNM institutio
 11 browser calls in all; the clean path is 2 per paper. Shell calls: one move-and-check of the
 downloads, then `attach` (Morath) or `zotero_ingest.py` plus one `zotero_batch_import.py` for
 both new papers (`--reading-status none`, balanced safety, 2.5 s and 3.8 s per paper).
-Usage before and after: measured by the owner, not visible to the agent (fill in).
-Shortlist: 62 OpenAlex credits.
+Usage: the whole session (reading the plan, the OpenAlex shortlist, three downloads, imports,
+this write-up) left the owner's plan at 20% of the day's allowance. The browser loop is a small
+part of that, so a few dozen papers per session is realistic. Shortlist: 62 OpenAlex credits.
+Afterwards Wilhelmer's title was fixed through the web API (PATCH with
+`If-Unmodified-Since-Version`; synced back to desktop within seconds).
+
+Vault folder on this machine: `pipeline_dir = "_Zotero_Robot"` (owner's choice, 2026-11-19;
+nothing had been written under the default yet).
 
 How the browser step works (no screenshots, no clicking through viewers): open
 `https://doi.org/<DOI>` (IEEE redirects to `/document/<arnumber>`), then one `javascript_tool`
