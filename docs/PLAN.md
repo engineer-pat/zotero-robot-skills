@@ -333,10 +333,13 @@ Learned:
   call, not at the end of the loop.
 - Crossref metadata for IEEE conference papers has no abstract, keeps JATS markup in titles
   (Wilhelmer's title is stored as `Si/SiO <sub>2</sub> Network` with runs of spaces), and splits
-  compound surnames (Cobos Freire became `Freire`, hence the citekey). Clean titles in
-  `zotero_ingest.py` output before import, or fix by hand afterwards; OpenAlex has the abstracts.
-- `oa.py` dies on non-ASCII output in a Windows console unless `PYTHONUTF8=1` (the same fix
-  `zot.py` got). Without a key, OpenAlex refuses cursor paging past the first 100 results, so
+  compound surnames (Cobos Freire became `Freire`, hence the citekey). Owner's rule: after
+  every import, a quick script pulls the new items' citekeys and metadata, the agent reads it,
+  then fixes what needs it. Built as `zot.py check` and `zot.py set` (fixed, 2026-11-19; title,
+  author and both abstracts corrected). Better BibTeX did not regenerate the citekey after the
+  author fix.
+- `oa.py` died on non-ASCII output in a Windows console unless `PYTHONUTF8=1`; it now writes
+  UTF-8 on Windows itself (fixed, 2026-11-19). Without a key, OpenAlex refuses cursor paging past the first 100 results, so
   `cites --all` fails; use `--limit 100`. Semantic search does not accept a publisher filter;
   the keyword filter is `primary_location.source.host_organization_lineage:P4310319808` (IEEE).
 - IEEE's closed-access papers on this topic are DFT work; the ML-potential literature
