@@ -41,8 +41,8 @@ pdf-convert, figure-craft), which stay unchanged.
 
 | Phase | Work | State |
 |---|---|---|
-| 0 | Machine setup (below) | to do on the owner's machine |
-| 1 | `zotero` skill, read-only: config, doctor, collections, status, dry-run, resolve, record, approve | written; 11 tests pass against a fake local API; **not yet run against a real Zotero** |
+| 0 | Machine setup (below) | done 2026-11-18: skills linked into `~/.claude/skills`, config written, `doctor` and `pdfc.py doctor` pass |
+| 1 | `zotero` skill, read-only: config, doctor, collections, status, dry-run, resolve, record, approve | verified against Zotero 10.0.7 on 2026-11-18 (results below); 22 tests pass |
 | 2 | Batch conversion: `index` (estimate, confirm, convert, frontmatter, `meta.json`, manifest), `fetch-pending`, generated collection notes | written; 20 tests pass against fakes; **not yet run for real** |
 | 3 | Paper cards (schema, validator), collection overview notes | to do |
 | 4 | Zotero writes: add by DOI, file into subcollections, optional markdown attachment | to do |
@@ -67,8 +67,8 @@ In Zotero: enable Settings → Advanced → "Allow other applications on this co
 communicate with Zotero"; create the tag `no-upload` and give it a colour; tag anything that
 must not leave the machine. An OpenAlex key is optional (`~/.config/openalex/api_key`).
 
-Owner's values for this machine (Pop!_OS workstation): scope `AFRL Research` (under 50
-papers, has subcollections), vault `~/Documents/_Vault101`, key already at
+Owner's values for this machine (Pop!_OS workstation): scope `PhD/AFRL` (46 top-level
+items, 8 subcollections; there is no collection named `AFRL Research`), vault `~/Documents/_Vault101`, key already at
 `~/.config/zotero/api_key`.
 
 ## Verify against the real Zotero before building further
@@ -85,6 +85,23 @@ fix `zot.py` plus its tests where reality differs:
    `no-key`, the Better BibTeX migration to the native field has not completed.
 5. Linked-file attachments (`linkMode` `linked_file`) resolve to a path.
 6. Group libraries: untested. `library = "groups/<id>"` should work for reads.
+
+Results, 2026-11-18, Zotero 10.0.7, scope `PhD/AFRL` (46 items: 38 ready, 5 held, 3 no-pdf):
+
+1. Matches. Every item carries all four fields.
+2. Matches: `text/plain` `file://` URL (percent-encoded, non-ASCII survives), 404 for an
+   unknown item. A real attachment with its file missing did not occur in scope; `file_path`
+   treats any HTTP error and a URL to a missing file alike, as `no-pdf`.
+3. Matches: 385 top items in one response with no `limit`. With `limit`, the server pages
+   with `rel="next"`, which `Local.get` follows.
+4. Matches: all 46 have native `citationKey`, none in Extra. An item with no creators and no
+   date gets a fallback key like `zotero-item-1769`; fix the item in Zotero.
+5. Not testable here: no `linked_file` attachments anywhere in the library.
+6. Reads work for both group libraries. Fixed: `zotero://select` links now use
+   `groups/<id>` instead of `library` for group items.
+
+Also fixed: `collections` died before printing the tree when a scope name did not resolve,
+and `doctor` reported such a scope as ok. Both now report it with close matches.
 
 ## Phase 2 as built: `zot.py index [COLLECTION...]`
 
