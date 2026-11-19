@@ -50,6 +50,7 @@ pdf-convert, figure-craft), which stay unchanged.
 | 6 | Pull request upstream: `zotero` skill, README/installer changes, arXiv-source option | to do |
 | 7 | Research to Zotero: shortlist from OpenAlex, open-access PDFs through the web API, paywalled papers through the owner's browser and the Zotero Connector | designed (below) |
 | 8 | Backup: restic snapshots of Zotero, the vault and the zotero-robot config; this machine first, then external SSD, later a NAS | designed (below) |
+| 9 | Windows: Phase 0 on the owner's Windows machine, PowerShell installer, Claude in Chrome trial | next session (below) |
 
 ## Phase 0: machine setup
 
@@ -158,6 +159,12 @@ Flow (nothing is added to Zotero before the owner approves the shortlist):
    extension, print the links for the owner to save.
 5. `zot.py status` reports what arrived and what is still missing; then `index` as usual.
 
+Keep the browser step cheap in tokens (Pro plan): read pages as text, not screenshots; save
+with the Connector shortcut (Ctrl+Shift+S) rather than clicking through; confirm each save
+with `zot.py` against the local API rather than by looking. Aim for 2-3 short tool calls per
+paper. The mechanical loop may run on a smaller model as a subagent. Measure with a
+3-paper trial (usage before and after) before promising a few dozen per session.
+
 A focused search means a few dozen papers per session, paced. No crawling, no scheduled
 bulk pulls through the institution's access.
 
@@ -174,6 +181,37 @@ bulk pulls through the institution's access.
   `zotero.sqlite.bak` or snapshot while Zotero is closed, and say which.
 - `backup` command: snapshot, `restic check` on a sample, retention policy, a one-line report.
   Scheduled daily once it has run cleanly by hand.
+
+## Phase 9: Windows (next session, on the owner's Windows machine)
+
+The Linux session's conversation does not carry over; this file is the handoff. Start a
+new agent session in the repo on Windows and say "read docs/PLAN.md, do Phase 9".
+
+1. `git clone` the fork, `git checkout zotero-skill`. Python 3.11+ (`py -3 --version`) and uv.
+2. Install the skills. `install.sh` is bash: run it from Git Bash, or write `install.ps1`
+   (same checks, `New-Item -ItemType SymbolicLink`, which needs Developer Mode, else copy).
+   Writing `install.ps1` is part of this phase.
+3. Zotero desktop: sign in to the same account and let it sync. Settings > Advanced: "Allow
+   other applications on this computer to communicate with Zotero". Install Better BibTeX.
+4. `zot.py config init`, then set `[scope] collections = ["PhD/AFRL"]` and the Windows vault
+   path. Keys, each in the owner's own terminal, never in chat: `zot.py setup`,
+   `uv run skills/pdf-convert/pdfc.py setup`. Then `zot.py doctor`, `pdfc.py doctor`.
+5. Run the test suite on Windows: `py -3 -m unittest discover -s skills/zotero -p "test_*.py"`.
+   Fix what breaks (paths, file URLs, permissions checks).
+6. Zotero Connector in Chrome, Proxies tab. Proxy settings do not sync between machines;
+   enter by hand (one minute):
+   - Login URL Scheme: `https://login.libproxy.unm.edu/login?url=%u`
+   - Proxied URL Scheme: `https://%h.libproxy.unm.edu/%p`
+   - Hostnames: as needed. IEEE uses institutional sign-in in the browser instead; sign in
+     there once ("Institutional Sign In" > University of New Mexico).
+7. Claude in Chrome: install the extension, connect it to Claude Code, then the Phase 7
+   3-paper trial: Morath (`10.1109/TNS.2016.2634500`) plus two other closed IEEE papers from
+   the list. Record tool calls and usage per paper here.
+
+Open items from the Linux session: first single-paper conversion not yet run
+(`dengDeepLevelTransient2024` suggested); duplicates to clean up in Zotero (`ochoa...2022a`,
+`dsouza...2016a`, the two "IEEE Xplore Full-Text PDF:" items); owner to check the Zotero
+storage plan against 1.4 GB of PDFs; restic not yet installed on Linux.
 
 ## Phase 3 design: paper cards
 
