@@ -361,6 +361,13 @@ agent session one collection at a time; a validator script checks the properties
 each page reference exists. Numbers read from charts by the converter are not data: check the
 figure image before putting one on a card.
 
+Decided with the owner, 2026-11-19, after the first conversion: no LLM clean-up pass over the
+converted markdown. It stays the converter's raw output (auditable against the PDF, and fine
+as LLM input despite figure-text glitches such as μm → `\cdot m`). Correction happens only at
+card time, for the numbers and claims a card uses, against the page and the figure image. The
+owner reads and annotates in Zotero, not in the vault. Annotations are not part of ingest;
+later option: pull the owner's Zotero highlights (local API) into the card as "marked by me".
+
 ## Conventions for whoever continues
 
 - Standard library only where possible; declare extras inline (PEP 723) as upstream does.
