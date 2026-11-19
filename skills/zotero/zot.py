@@ -5,7 +5,7 @@
 # ///
 """zot.py: read a Zotero library by collection, safely, for agent pipelines.
 
-Reads go to the Zotero desktop app's local API (http://localhost:23119/api),
+Reads go to the Zotero desktop app's local API (http://127.0.0.1:23119/api),
 which needs no key and never leaves the machine. Zotero must be running with
 Settings > Advanced > "Allow other applications on this computer to
 communicate with Zotero" turned on.
@@ -63,7 +63,7 @@ WEB_API = "https://api.zotero.org"
 
 DEFAULTS: dict = {
     "zotero": {
-        "local_api": "http://localhost:23119/api",
+        "local_api": "http://127.0.0.1:23119/api",
         "library": "users/0",
         "user_id": 0,
         "api_key_file": "",  # empty: <config home>/zotero/api_key
@@ -736,7 +736,12 @@ def cmd_record(args) -> None:
 def pdfc_command(cfg: dict) -> list[str]:
     custom = cfg["convert"].get("pdfc_command") or ""
     if custom:
-        return shlex.split(custom) if isinstance(custom, str) else list(custom)
+        if not isinstance(custom, str):
+            return list(custom)
+        if os.name == "nt":  # POSIX splitting would eat the backslashes in Windows paths
+            return [t[1:-1] if len(t) > 1 and t[0] == t[-1] == '"' else t
+                    for t in shlex.split(custom, posix=False)]
+        return shlex.split(custom)
     script = Path(__file__).resolve().parent.parent / "pdf-convert" / "pdfc.py"
     if not script.exists():
         die(f"pdf-convert skill not found at {script}; set [convert] pdfc_command")
@@ -817,10 +822,16 @@ def cmd_index(args) -> None:
     if not todo:
         return
     if not args.yes:
+        no_terminal = "Not converting: pass --yes once the user has seen and agreed to this list."
         if not sys.stdin.isatty():
-            print("Not converting: pass --yes once the user has seen and agreed to this list.", file=sys.stderr)
+            print(no_terminal, file=sys.stderr)
             sys.exit(4)
-        if input(f"Convert {len(todo)} item(s) for about ${total:.2f}? [y/N] ").strip().lower() not in ("y", "yes"):
+        try:
+            answer = input(f"Convert {len(todo)} item(s) for about ${total:.2f}? [y/N] ")
+        except EOFError:  # Windows reports NUL as a terminal
+            print("\n" + no_terminal, file=sys.stderr)
+            sys.exit(4)
+        if answer.strip().lower() not in ("y", "yes"):
             print("Cancelled; nothing was sent.")
             return
     pending = load_pending()
@@ -1016,4 +1027,7 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
+    if os.name == "nt":  # piped output is cp1252 there, which cannot hold titles and names
+        for stream in (sys.stdout, sys.stderr):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     main()

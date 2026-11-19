@@ -14,6 +14,9 @@ python3 <skill-dir>/zot.py <command> ...   # Python 3.11+
 uv run <skill-dir>/zot.py <command> ...    # Python 3.10: uv adds the TOML reader
 ```
 
+On Windows, `python3` is often a Microsoft Store stub that prints "Python was not found".
+Use `py -3 <skill-dir>/zot.py` or `uv run` there.
+
 Run `doctor` first in a new session or on a new machine. It checks the config, that Zotero
 answers, that the collections in scope resolve, and the web API key, without printing the key.
 

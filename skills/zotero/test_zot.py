@@ -279,7 +279,11 @@ class ZotTest(Base):
         self.assertEqual(zot.select_link(cfg, "A1"), "zotero://select/groups/6639135/items/A1")
 
     def test_file_url_paths(self):
-        self.assertEqual(zot.file_url_to_path("file:///home/p/My%20Paper.pdf"), Path("/home/p/My Paper.pdf"))
+        if os.name == "nt":
+            self.assertEqual(zot.file_url_to_path("file:///C:/Users/p/My%20Paper.pdf"),
+                             Path(r"C:\Users\p\My Paper.pdf"))
+        else:
+            self.assertEqual(zot.file_url_to_path("file:///home/p/My%20Paper.pdf"), Path("/home/p/My Paper.pdf"))
         self.assertIsNone(zot.file_url_to_path("https://example.org/a.pdf"))
 
     def test_key_is_never_printed(self):
@@ -310,7 +314,8 @@ class IndexTest(Base):
         os.environ["FAKE_PDFC_LOG"] = str(self.log)
         os.environ["FAKE_PDFC_PLAN"] = "{}"
         with open(self.cfgfile, "a", encoding="utf-8") as f:
-            f.write(f'[convert]\npdfc_command = "{sys.executable} {fake}"\n')
+            # A TOML literal string with quoted paths, as a Windows user would write it
+            f.write(f"[convert]\npdfc_command = '\"{sys.executable}\" \"{fake}\"'\n")
         self.root = self.vault / "_zotero-robot"
 
     def calls(self, kind="convert", dry=False):

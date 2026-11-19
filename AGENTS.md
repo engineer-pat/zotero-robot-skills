@@ -37,4 +37,7 @@ This repo holds portable agent skills (`skills/<name>/SKILL.md` plus scripts). R
 - Before finishing, check that the script still runs. For openalex, `work` costs no credits:
   `python3 skills/openalex/oa.py work 10.1126/sciadv.abk0644`
 - When adding a skill, add a row to the table in `README.md` and a prerequisite check for
-  it in `install.sh` (`check()`), if it needs any software.
+  it in `install.sh` (`check()`), if it needs any software, and the same check in
+  `install.ps1` (`Invoke-Check`).
+- On Windows, use `install.ps1` wherever these steps say `install.sh` (`-Check`, `-Skill`,
+  `-Copy`, `-Force`, `-Index`).

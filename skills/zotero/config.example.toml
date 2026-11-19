@@ -11,7 +11,9 @@
 [zotero]
 # The desktop app's local API. Reads need no key. Zotero must be running, with
 # Settings > Advanced > "Allow other applications on this computer to communicate with Zotero".
-local_api = "http://localhost:23119/api"
+# 127.0.0.1, not localhost: Zotero listens on IPv4 only, and on Windows "localhost" tries
+# IPv6 first and waits 2 s on every request.
+local_api = "http://127.0.0.1:23119/api"
 # "users/0" is your personal library. A group library is "groups/<group id>".
 library = "users/0"
 # Your numeric userID, for web API writes. `zot.py setup` prints it. 0 = not set.

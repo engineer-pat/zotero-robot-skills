@@ -44,6 +44,14 @@ The script never overwrites anything it didn't create. If a skill of the same na
 in the target, it is skipped. `--force` moves it to `~/.local/state/assistant_skills/backups/`
 first.
 
+**Windows:** run `install.ps1` from PowerShell with the same options in PowerShell form
+(`-Skill zotero,openalex`, `-Copy`, `-Force`, `-Check`, `-Uninstall`, `-Index`), e.g.
+`.\install.ps1 $HOME\.claude\skills`. If scripts are blocked, run
+`powershell -ExecutionPolicy Bypass -File install.ps1 ...`. It makes symbolic links when
+Developer Mode is on, else directory junctions, which need no privileges. Backups go to
+`%LOCALAPPDATA%\assistant_skills\backups`. Where a skill says `python3`, use `py -3` or `uv run`:
+`python3` on Windows is often a Microsoft Store stub.
+
 **Harness without skill support?** Run `./install.sh --index` and paste the output into the
 agent's instruction file (`AGENTS.md`, a system prompt, or similar). It lists each skill's
 trigger description and the path of its `SKILL.md`, which is all an agent needs to load a skill

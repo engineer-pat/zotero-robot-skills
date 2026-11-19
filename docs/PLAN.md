@@ -50,7 +50,7 @@ pdf-convert, figure-craft), which stay unchanged.
 | 6 | Pull request upstream: `zotero` skill, README/installer changes, arXiv-source option | to do |
 | 7 | Research to Zotero: shortlist from OpenAlex, open-access PDFs through the web API, paywalled papers through the owner's browser and the Zotero Connector | designed (below) |
 | 8 | Backup: restic snapshots of Zotero, the vault and the zotero-robot config; this machine first, then external SSD, later a NAS | designed (below) |
-| 9 | Windows: Phase 0 on the owner's Windows machine, PowerShell installer, Claude in Chrome trial | next session (below) |
+| 9 | Windows: Phase 0 on the owner's Windows machine, PowerShell installer, Claude in Chrome trial | steps 1-6 done 2026-11-19 (`install.ps1`, four Windows fixes, 23 tests pass, keys, proxies); Chrome trial to do |
 
 ## Phase 0: machine setup
 
@@ -238,6 +238,28 @@ new agent session in the repo on Windows and say "read docs/PLAN.md, do Phase 9"
 7. Claude in Chrome: install the extension, connect it to Claude Code, then the Phase 7
    3-paper trial: Morath (`10.1109/TNS.2016.2634500`) plus two other closed IEEE papers from
    the list. Record tool calls and usage per paper here.
+
+Results, 2026-11-19, Windows 11, Windows PowerShell 5.1, Python 3.13 (`py -3`), Zotero 10.0.8:
+
+- Steps 1-3 were already done on this machine (repo, Python, uv, Zotero signed in with local
+  API on, Better BibTeX with the same citekey format).
+- `install.ps1` written: same options as `install.sh`, same checks with Windows key locations.
+  `New-Item -ItemType SymbolicLink` in 5.1 needs admin even with Developer Mode, so it uses
+  `mklink /D`, and falls back to a junction (no privilege needed). Developer Mode is off here,
+  so the five skills are junctions in `~\.claude\skills`. Links are removed with a
+  non-recursive `Directory.Delete`, never `Remove-Item`, which can follow a directory link.
+- Config at `%APPDATA%\zotero-robot\config.toml`: scope `PhD/AFRL`, vault `~/Documents/_Vault101`.
+  Keys stored by the owner (`zot.py setup`; Datalab key in the Windows keyring). `doctor` and
+  `pdfc.py doctor` pass. Connector proxies entered and Claude in Chrome installed by the owner. Dry run: 44 items,
+  36 ready, 5 held, 3 no-pdf (Linux had 46 and 38 ready; the two missing items were not found).
+- Fixed for Windows in `zot.py`: (1) `local_api` default is now `127.0.0.1`: Zotero listens on
+  IPv4 only and Windows `localhost` waits 2 s for IPv6 on each request (a dry run took more
+  than 2 min, now 3 s). (2) A string `pdfc_command` was split with POSIX `shlex`, which drops
+  backslashes from Windows paths. (3) `index` crashed on EOF where stdin is `NUL`, which
+  Windows reports as a terminal; now exits 4 like any other non-terminal. (4) Piped output was
+  cp1252 and died on non-ASCII titles; stdout and stderr are UTF-8 on Windows.
+- `python3` here is the Microsoft Store stub. SKILL.md and README now say to use `py -3` or `uv run`.
+- Tests: 23 pass on Windows (the failures were all the `pdfc_command` quoting).
 
 Open items from the Linux session: first single-paper conversion not yet run
 (`dengDeepLevelTransient2024` suggested); duplicates to clean up in Zotero (`ochoa...2022a`,
