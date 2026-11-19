@@ -99,6 +99,31 @@ on demand.
   A web API key is only needed for write commands. Store it in your own terminal with
   `python3 skills/zotero/zot.py setup`.
 
+### Companion skill: save-papers-to-zotero (separate repo, pinned)
+
+Adding new papers to Zotero (research flow, `docs/PLAN.md` phase 7) uses
+[save-papers-to-zotero](https://github.com/alexxpzhu/save-papers-to-zotero) (MIT). It is not
+part of this repo and the installers do not touch it. Install it as its own skill at the
+reviewed commit **`5fe2e34`** (2026-08-29, reviewed 2026-11-19), next to this repo:
+
+```bash
+# Linux / macOS
+git clone https://github.com/alexxpzhu/save-papers-to-zotero.git ~/Desktop/save-papers-to-zotero
+git -C ~/Desktop/save-papers-to-zotero checkout 5fe2e34
+ln -s ~/Desktop/save-papers-to-zotero/save-papers-to-zotero ~/.claude/skills/save-papers-to-zotero
+```
+
+```powershell
+# Windows (a junction needs no Developer Mode)
+git clone https://github.com/alexxpzhu/save-papers-to-zotero.git $HOME\Desktop\save-papers-to-zotero
+git -C $HOME\Desktop\save-papers-to-zotero checkout 5fe2e34
+New-Item -ItemType Junction -Path $HOME\.claude\skills\save-papers-to-zotero -Target $HOME\Desktop\save-papers-to-zotero\save-papers-to-zotero
+```
+
+Check with `git -C <clone> log --oneline -1`, which should print `5fe2e34`. Do not `git pull` it:
+it writes to the Zotero library, so review a newer commit first and update the pin here. The
+link breaks if the clone moves; recreate it after a move.
+
 ## Updating
 
 With the default symlinks, `git pull` updates every harness at once. Copies (`--copy`) need
