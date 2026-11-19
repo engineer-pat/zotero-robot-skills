@@ -45,12 +45,12 @@ pdf-convert, figure-craft), which stay unchanged.
 | 1 | `zotero` skill, read-only: config, doctor, collections, status, dry-run, resolve, record, approve | verified against Zotero 10.0.7 on 2026-11-18 (results below); 22 tests pass |
 | 2 | Batch conversion: `index` (estimate, confirm, convert, frontmatter, `meta.json`, manifest), `fetch-pending`, generated collection notes | written; 20 tests pass against fakes; **not yet run for real** |
 | 3 | Paper cards (schema, validator), collection overview notes | to do |
-| 4 | Zotero writes: add by DOI, file into subcollections, optional markdown attachment | `attach CITEKEY PDF` done 2026-11-19 (2 tests, not yet run for real); rest to do |
+| 4 | Zotero writes: add by DOI, file into subcollections, optional markdown attachment | `attach CITEKEY PDF` done 2026-11-19 (2 tests; first real run on Morath, verified); rest to do |
 | 5 | Citation check for LaTeX drafts, reference resolution through OpenAlex, watch list | sample watch prompt is in the README; rest to do |
 | 6 | Pull request upstream: `zotero` skill, README/installer changes, arXiv-source option | to do |
-| 7 | Research to Zotero: shortlist from OpenAlex, open-access PDFs through the web API, paywalled papers through the owner's browser and the Zotero Connector | designed (below) |
+| 7 | Research to Zotero: shortlist from OpenAlex, open-access PDFs through the web API, paywalled papers through the owner's browser and the Zotero Connector | designed (below); browser loop trialled on 3 IEEE papers 2026-11-19 |
 | 8 | Backup: restic snapshots of Zotero, the vault and the zotero-robot config; this machine first, then external SSD, later a NAS | designed (below) |
-| 9 | Windows: Phase 0 on the owner's Windows machine, PowerShell installer, Claude in Chrome trial | steps 1-6 done 2026-11-19 (`install.ps1`, four Windows fixes, 23 tests pass, keys, proxies); Chrome trial to do |
+| 9 | Windows: Phase 0 on the owner's Windows machine, PowerShell installer, Claude in Chrome trial | steps 1-6 done 2026-11-19 (`install.ps1`, four Windows fixes, 23 tests pass, keys, proxies); step 7 Chrome trial done 2026-11-19, 3/3 papers saved with verified PDFs (results below) |
 
 ## Phase 0: machine setup
 
@@ -288,6 +288,54 @@ ML-potential modelling of silicon oxide defects (bulk, Si/SiO2 interface, oxide)
 Erhard et al. 2024, "Modelling atomic and nanoscale structure in the silicon–oxygen system
 through active machine learning" (OpenAlex `W4392348184`). No OpenAlex key on this machine
 (1,000 credits/day).
+
+Step 7 trial, 2026-11-19 (Chrome 1 connected, IEEE Xplore through UNM institutional sign-in):
+
+| paper | route | result | browser calls |
+|---|---|---|---|
+| `morathMoreAccurateQuantum2017` (`ZSRN5L64`) | `zot.py attach` | PDF `4GQT55VZ`, synced, SHA-256 verified (1.14 MB) | 5 (3 lost to a signed-out session, see below; 2 once signed in) |
+| `wilhelmerStatisticalInitioAnalysis2021` (`AK3U88VX`), `10.1109/essderc53440.2021.9631833` | save-papers-to-zotero into `_inbox` | `saved_with_pdf`, 0.68 MB, no possible duplicates | 2, then 2 for the retry of both papers |
+| `freireAtomisticSimulationDefect2024` (`3D967B9F`), `10.1109/iirw62856.2024.10947139` | save-papers-to-zotero into `_inbox` | `saved_with_pdf`, 11.0 MB, no possible duplicates | 2 (download blocked, retried with the paper above) |
+
+11 browser calls in all; the clean path is 2 per paper. Shell calls: one move-and-check of the
+downloads, then `attach` (Morath) or `zotero_ingest.py` plus one `zotero_batch_import.py` for
+both new papers (`--reading-status none`, balanced safety, 2.5 s and 3.8 s per paper).
+Usage before and after: measured by the owner, not visible to the agent (fill in).
+Shortlist: 62 OpenAlex credits.
+
+How the browser step works (no screenshots, no clicking through viewers): open
+`https://doi.org/<DOI>` (IEEE redirects to `/document/<arnumber>`), then one `javascript_tool`
+call in that page that waits for the header, checks for "Access provided by: UNIVERSITY OF NEW
+MEXICO", fetches `/stampPDF/getPDF.jsp?tp=&arnumber=<n>&ref=` with the page's own session,
+checks the first bytes are `%PDF`, and saves it as `zr_<arnumber>.pdf` through a blob link (the
+browser's own download, into `~/Downloads`). The script then moves it to a temp folder and checks
+header and `%%EOF` before any Zotero write. Several arnumbers on the same site can be fetched
+in one call from one page.
+
+Learned:
+
+- Zotero desktop must be running, not just the web library: `doctor`, the DOI check and both
+  write paths use the local server.
+- The session was signed out at first although the owner had signed in earlier; the page showed
+  "Institutional Sign In" and no "Access provided by". Detect that from page text before
+  fetching. Owner's rule from now on: the agent may click Institutional Sign In > University of
+  New Mexico and follow the redirects, and hands over only at a password or second-factor page.
+- Chrome blocks automatic downloads after the first one from a site ("trying to download
+  multiple files"); the fetch succeeds but no file lands. The owner allowed
+  `ieeexplore.ieee.org` under `chrome://settings/content/automaticDownloads` (a browser setting,
+  so the owner's to change). Check that each file landed on disk straight after the download
+  call, not at the end of the loop.
+- Crossref metadata for IEEE conference papers has no abstract, keeps JATS markup in titles
+  (Wilhelmer's title is stored as `Si/SiO <sub>2</sub> Network` with runs of spaces), and splits
+  compound surnames (Cobos Freire became `Freire`, hence the citekey). Clean titles in
+  `zotero_ingest.py` output before import, or fix by hand afterwards; OpenAlex has the abstracts.
+- `oa.py` dies on non-ASCII output in a Windows console unless `PYTHONUTF8=1` (the same fix
+  `zot.py` got). Without a key, OpenAlex refuses cursor paging past the first 100 results, so
+  `cites --all` fails; use `--limit 100`. Semantic search does not accept a publisher filter;
+  the keyword filter is `primary_location.source.host_organization_lineage:P4310319808` (IEEE).
+- IEEE's closed-access papers on this topic are DFT work; the ML-potential literature
+  (seed's snowball) is almost all non-IEEE. Owner's fallback topic if a shortlist is thin:
+  defects in IR detectors.
 
 Open items from the Linux session: first single-paper conversion not yet run
 (`dengDeepLevelTransient2024` suggested); duplicates to clean up in Zotero (`ochoa...2022a`,
