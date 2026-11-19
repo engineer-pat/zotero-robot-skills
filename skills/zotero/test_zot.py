@@ -157,6 +157,7 @@ class Base(unittest.TestCase):
         self.cfgfile = cfgdir / "config.toml"
         self.cfgfile.write_text(
             f'[zotero]\nlocal_api = "http://127.0.0.1:{self.srv.server_address[1]}/api"\n'
+            f"api_key_file = '{self.tmp / 'no_api_key'}'\n"                # never the machine's real key
             f'[scope]\ncollections = ["AFRL Research"]\n'
             f"[vault]\npath = '{self.vault}'\n", encoding="utf-8")
         os.environ["ZOTERO_ROBOT_CONFIG"] = str(self.cfgfile)
@@ -253,6 +254,25 @@ class ZotTest(Base):
         self.assertEqual(tree.resolve("AFRL Research/DLTS"), "C2")
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             tree.resolve("DLTS")
+
+    def test_unknown_scope_still_lists_tree(self):
+        self.cfgfile.write_text(self.cfgfile.read_text().replace('"AFRL Research"', '"AFRL Projects"'))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            out = self.run_cli("collections")                  # the tree is what you need to fix the name
+        self.assertIn("AFRL Research  [C1]", out)
+        self.assertNotIn("in scope", out)
+        self.assertIn("did you mean: AFRL Research?", err.getvalue())
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out), self.assertRaises(SystemExit):
+            zot.main(["doctor"])
+        self.assertIn("[miss] scope: no collection named 'AFRL Projects'", out.getvalue())
+
+    def test_select_link_follows_library(self):
+        cfg = zot.load_config()
+        self.assertEqual(zot.select_link(cfg, "A1"), "zotero://select/library/items/A1")
+        cfg["zotero"]["library"] = "groups/6639135"
+        self.assertEqual(zot.select_link(cfg, "A1"), "zotero://select/groups/6639135/items/A1")
 
     def test_file_url_paths(self):
         self.assertEqual(zot.file_url_to_path("file:///home/p/My%20Paper.pdf"), Path("/home/p/My Paper.pdf"))

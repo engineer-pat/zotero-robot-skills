@@ -280,15 +280,29 @@ class Tree:
             stack.extend(self.kids.get(k, []))
         return out
 
+    def matches(self, spec: str) -> list[str]:
+        """Keys matching a collection key, a name, or a path like 'AFRL Research/DLTS'."""
+        if spec in self.name:
+            return [spec]
+        want = spec.strip("/").lower()
+        return [k for k in self.name
+                if self.name[k].lower() == want or self.path(k).lower() == want]
+
+    def suggest(self, spec: str) -> list[str]:
+        """Paths of collections whose name shares a word with spec, for error messages."""
+        words = {w for w in re.split(r"[\s/_-]+", spec.lower()) if len(w) > 2}
+        return sorted(self.path(k) for k, n in self.name.items()
+                      if words & set(re.split(r"[\s/_-]+", n.lower())))
+
+    def unknown(self, spec: str) -> str:
+        near = self.suggest(spec)
+        return f"no collection named {spec!r}" + (f" (did you mean: {'; '.join(near)}?)" if near else "")
+
     def resolve(self, spec: str) -> str:
         """A collection key, a name, or a path like 'AFRL Research/DLTS'."""
-        if spec in self.name:
-            return spec
-        want = spec.strip("/").lower()
-        hits = [k for k in self.name
-                if self.name[k].lower() == want or self.path(k).lower() == want]
+        hits = self.matches(spec)
         if not hits:
-            die(f"no collection named {spec!r}. See: zot.py collections")
+            die(f"{self.unknown(spec)}. See: zot.py collections")
         if len(hits) > 1:
             listing = "; ".join(f"{self.path(k)} [{k}]" for k in hits)
             die(f"{spec!r} matches several collections: {listing}. Use the key or full path.")
@@ -336,6 +350,13 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def select_link(cfg: dict, key: str) -> str:
+    """zotero:// link that selects the item in the desktop app, in its own library."""
+    lib = cfg["zotero"]["library"].strip("/")
+    where = "library" if lib.startswith("users/") else lib
+    return f"zotero://select/{where}/items/{key}"
 
 
 def pipeline_root(cfg: dict) -> Path | None:
@@ -527,7 +548,12 @@ def cmd_doctor(args) -> None:
         if scope:
             tree = Tree(cols)
             for s in scope:
-                k = tree.resolve(s)
+                hits = tree.matches(s)
+                if len(hits) != 1:
+                    line(False, f"scope: {tree.unknown(s)}" if not hits else
+                         f"scope: {s!r} matches several collections; use the key or full path")
+                    continue
+                k = hits[0]
                 line(True, f"scope resolves: {tree.path(k)} [{k}], {len(tree.descendants(k)) - 1} subcollections")
     except SystemExit:
         bad += 1
@@ -557,9 +583,13 @@ def cmd_collections(args) -> None:
     cfg = load_config(required=False)
     tree = Tree(Local(cfg).get("collections"))
     banned = tree.excluded(cfg["scope"]["exclude_collections"])
-    scope = set()
+    scope, problems = set(), []
     for s in cfg["scope"]["collections"]:
-        scope.update(tree.descendants(tree.resolve(s)))
+        hits = tree.matches(s)
+        if len(hits) == 1:
+            scope.update(tree.descendants(hits[0]))
+        else:
+            problems.append(tree.unknown(s) if not hits else f"{s!r} matches several collections")
 
     def walk(parent: str | None, depth: int) -> None:
         for k in tree.kids.get(parent, []):
@@ -568,6 +598,8 @@ def cmd_collections(args) -> None:
             walk(k, depth + 1)
 
     walk(None, 0)
+    for p in problems:
+        print(f"\nscope problem: {p}. Fix [scope] collections in {config_path()}", file=sys.stderr)
 
 
 def cmd_status(args) -> None:
@@ -623,7 +655,7 @@ def lookup(cfg: dict, key: str) -> list[dict]:
                     "year": year(d), "id": public_id(d), "excluded": blocked,
                     "pdf": str(pdf) if pdf else None,
                     "outdir": str(root / "fulltext" / safe_key(key)) if root and not blocked else None,
-                    "select": f"zotero://select/library/items/{it['key']}"})
+                    "select": select_link(cfg, it["key"])})
     return out
 
 
@@ -661,7 +693,7 @@ def finalize(cfg: dict, item: dict, outdir: Path, preset: str, converter: str = 
         f"citekey: {json.dumps(item['citekey'])}",
         f"title: {json.dumps(meta['title'])}",
         f"year: {json.dumps(meta['year'])}",
-        f"zotero: {json.dumps('zotero://select/library/items/' + item['key'])}",
+        f"zotero: {json.dumps(select_link(cfg, item['key']))}",
         f"collections: {json.dumps(meta['collections'])}",
         f"converted: {json.dumps(meta['converted_at'][:10])}",
         f"converter: {json.dumps(converter + ' ' + preset)}",
@@ -893,7 +925,7 @@ def write_notes(cfg: dict, root: Path) -> None:
                 paper = f"[[{rel}/fulltext/{sk}/{sk}\\|{ck}]]" if ck and r["status"] == "done" else (ck or "-")
                 card = f"[[{rel}/cards/{sk}\\|card]]" if ck and (root / "cards" / f"{sk}.md").exists() else ""
                 title = r["title"].replace("|", "/")
-                link = f"[open](zotero://select/library/items/{r['key']})"
+                link = f"[open]({select_link(cfg, r['key'])})"
                 lines.append(f"| {paper} | {r['year']} | {title} | {r['status']} | {card} | {link} |")
         (outdir / f"{note_name(path)}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     readme = root / "README.md"
