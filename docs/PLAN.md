@@ -141,19 +141,39 @@ Findings, 2026-11-18:
 - Not used, ever: Sci-Hub, LibGen and plugins built on them (zotero-scipdf, zotero-nexus).
   Also not used: generic "run any JavaScript in Zotero" bridges (cli-anything-zotero).
 
+Writes: use `alexxpzhu/save-papers-to-zotero` (MIT, https://github.com/alexxpzhu/save-papers-to-zotero,
+reviewed candidate commit `5fe2e34`, 2026-08-29) rather than building our own write path. It
+writes through the local Connector server, so no web API key and no plugin: `saveItems`
+(item from translator-style metadata), `updateSession` (files it into a named collection;
+the collection must already exist), `saveAttachment` (streams a local or public PDF, then
+checks size and SHA-256). Its `zotero_ingest.py` turns DOIs/arXiv ids/.bib into a manifest via
+Crossref and arXiv; batches resume from a ledger. Its rules match ours: browser PDFs only
+from the user's signed-in session via Claude in Chrome, downloaded to a temp file and passed
+with `--pdf-file`; no cookies, no paywall or CAPTCHA bypass, no mirrors. Windows-aware.
+
+Before use:
+1. Read all of it (~3,700 lines; it writes to the library). Pin to the reviewed commit.
+2. Install as its own skill, not vendored. The zotero skill orchestrates around it.
+3. Always pass `reading_status: none` (default adds `#status/to-read` for a plugin not in use).
+4. It creates an item even when a duplicate exists (reports only), so drop DOIs already in
+   the library first (step 2 below).
+5. Trial: one arXiv paper into a throwaway collection the owner creates (e.g.
+   `PhD/AFRL/_inbox`). Watch for the Connector hang seen once on `/connector/proxies`.
+
 Flow (nothing is added to Zotero before the owner approves the shortlist):
 
 1. Search with the openalex skill, read abstracts, give a shortlist. The owner picks.
 2. Drop DOIs already in the library (match on DOI, all libraries in config).
-3. Open access: create the item by DOI in the web API into an inbox collection the owner
-   names (e.g. `PhD/AFRL/_inbox`), attach the OpenAlex `best_oa_location.pdf_url` copy,
-   record the source in a note or Extra. Only repository copies (arXiv, OSTI, NASA NTRS,
+3. Open access: build a save-papers-to-zotero manifest (its ingest step) for the inbox
+   collection the owner names (e.g. `PhD/AFRL/_inbox`), with the OpenAlex
+   `best_oa_location.pdf_url` as the PDF source, and import it. Only repository copies (arXiv, OSTI, NASA NTRS,
    PubMed Central) download from a script; Wiley and AIP answer a script with a Cloudflare
    challenge even for open-access PDFs (checked 2026-11-18), so publisher-hosted open access
    goes through step 4 with the paywalled papers.
 4. Paywalled: before starting, print the list, the count, and a time estimate (about one
    paper a minute). Then, in the owner's own Chrome (Claude in Chrome), open each DOI page in
-   the signed-in session, save with the Connector into the inbox, and print progress
+   the signed-in session, download the visible PDF to a temp file and import it with save-papers-to-zotero
+   (`--pdf-file`) into the inbox, and print progress
    (`[3/12] saved smith2021, 9 min left`). Stop and hand over on a login page, CAPTCHA, or
    access-denied page; never retry past one. Daily cap in config. Without the browser
    extension, print the links for the owner to save.
@@ -171,7 +191,7 @@ Sign-in, for step 4:
   progress saved, ask the owner to sign in, then resume from the next unsaved paper.
 
 Keep the browser step cheap in tokens (Pro plan): read pages as text, not screenshots; save
-with the Connector shortcut (Ctrl+Shift+S) rather than clicking through; confirm each save
+with the the browser's own PDF download rather than clicking through; confirm each save
 with `zot.py` against the local API rather than by looking. Aim for 2-3 short tool calls per
 paper. The mechanical loop may run on a smaller model as a subagent. Measure with a
 3-paper trial (usage before and after) before promising a few dozen per session.
