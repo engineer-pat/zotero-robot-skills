@@ -82,7 +82,7 @@ class Fake:
         self.collections = [col("C1", "AFRL Research", n=5), col("C2", "DLTS", "C1", 2),
                             col("C3", "exclude", "C1", 1), col("C9", "Courses", n=1)]
         self.items = {
-            "C1": [item("A1", "Ready paper", ["C1"], citationKey="smith2021", DOI="10.1/x"),
+            "C1": [item("A1", "Ready paper", ["C1", "C2"], citationKey="smith2021", DOI="10.1/x"),
                    item("A2", "Tagged draft", ["C1"], citationKey="doe2022", DOI="10.1/y",
                         tags=[{"tag": "No-Upload"}]),
                    item("A3", "Report with no DOI", ["C1"], citationKey="lab2020", itemType="report"),
@@ -124,6 +124,8 @@ def serve(fake):
                     for it in lst:
                         seen.setdefault(it["key"], it)
                 body = list(seen.values())
+            elif len(parts) == 2 and parts[0] == "items":
+                body = next((it for lst in fake.items.values() for it in lst if it["key"] == parts[1]), None)
             elif len(parts) == 3 and parts[0] == "items" and parts[2] == "children":
                 body = fake.children(parts[1])
             elif len(parts) == 5 and parts[2:] == ["file", "view", "url"]:
@@ -497,6 +499,165 @@ class AttachTest(Base):
         self.assertIn("excluded", self.attach("doe2022", str(self.pdf), expect=1))
         self.assertIn("0 items", self.attach("nobody2000", str(self.pdf), expect=1))
         self.assertEqual(self.web, [])
+
+
+class CheckTest(Base):
+    def check(self, *argv, expect=0):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            try:
+                zot.main(["check", *argv])
+                code = 0
+            except SystemExit as e:
+                code = e.code
+        self.assertEqual(code, expect, out.getvalue())
+        return out.getvalue()
+
+    def test_clean_item_passes(self):
+        self.fake.items["C1"][0]["data"].update(
+            creators=[{"creatorType": "author", "firstName": "Ann", "lastName": "Smith"}],
+            abstractNote="An abstract.", publicationTitle="J. Test")
+        out = self.check("smith2021")
+        self.assertIn("1 item(s), 0 with problems", out)
+        self.assertNotIn("abstract: none", out)
+
+    def test_flags_markup_names_and_duplicates(self):
+        self.fake.items["C2"].append(item(
+            "A9", "Oxide in the Si/SiO\n   <sub>2</sub>   Network", ["C2"], citationKey="ox2021",
+            DOI="10.1/x", itemType="conferencePaper",
+            creators=[{"creatorType": "author", "firstName": "", "lastName": "Solo"},
+                      {"creatorType": "author", "firstName": "Teofilo Reynaldo Cobos", "lastName": "Freire"}]))
+        rows = {r["key"]: r for r in json.loads(self.check("ox2021", "--json", expect=2))}
+        r = rows["A9"]
+        joined = "\n".join(r["problems"])
+        self.assertIn("markup", joined)
+        self.assertIn("whitespace", joined)
+        self.assertIn("creator 1 'Solo': no first name", joined)
+        self.assertIn("possible duplicate of A1", joined)    # same DOI as smith2021
+        self.assertTrue(any("compound surname" in n for n in r["notes"]))
+        self.assertIn("venue: proceedingsTitle / conferenceName empty", r["notes"])
+        self.assertIsNone(r["pdf"] if r["excluded"] else None)
+
+    def test_collection_and_excluded(self):
+        rows = {r["key"]: r for r in json.loads(self.check("DLTS", "--json", expect=2))}
+        self.assertEqual(set(rows), {"A1", "A5", "A8"})
+        self.assertEqual(rows["A8"]["excluded"], ["exclude collection"])
+        self.assertIsNone(rows["A8"]["pdf"])                 # an excluded item's files are not looked at
+        self.assertIn("no such collection", self.check("nothing2000", expect=1))
+
+
+class SetTest(Base):
+    """`set` against a fake web API; a PATCH also updates the local fake, as a desktop sync would."""
+
+    def setUp(self):
+        super().setUp()
+        self.web, fake = [], self.fake
+        web = self.web
+        self.version = 7
+
+        def find(key):
+            for lst in fake.items.values():
+                for it in lst:
+                    if it["key"] == key:
+                        yield it
+
+        test = self
+
+        class W(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def reply(self, code, out=None):
+                raw = json.dumps(out).encode() if out is not None else b""
+                self.send_response(code)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+
+            def do_GET(self):
+                web.append(("GET", self.path, dict(self.headers), b""))
+                its = list(find(self.path.rsplit("/", 1)[-1]))
+                if not its:
+                    return self.reply(404)
+                self.reply(200, {"key": its[0]["key"], "version": test.version, "data": its[0]["data"]})
+
+            def do_PATCH(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                web.append(("PATCH", self.path, dict(self.headers), body))
+                if self.headers.get("If-Unmodified-Since-Version") != str(test.version):
+                    return self.reply(412)
+                for it in find(self.path.rsplit("/", 1)[-1]):
+                    it["data"].update(json.loads(body))
+                self.reply(204)
+
+        self.websrv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), W)
+        threading.Thread(target=self.websrv.serve_forever, daemon=True).start()
+        self.saved = zot.WEB_API, zot.verify_key
+        zot.WEB_API = f"http://127.0.0.1:{self.websrv.server_address[1]}"
+        zot.verify_key = lambda k: {"userID": 42}
+        os.environ["ZOTERO_API_KEY"] = "SECRETKEY123"
+        self.fake.items["C1"][0]["data"]["creators"] = [
+            {"creatorType": "author", "firstName": "Teofilo Cobos", "lastName": "Freire"}]
+
+    def tearDown(self):
+        zot.WEB_API, zot.verify_key = self.saved
+        os.environ.pop("ZOTERO_API_KEY", None)
+        self.websrv.shutdown()
+        self.websrv.server_close()
+        super().tearDown()
+
+    def set(self, *argv, expect=0):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            try:
+                zot.main(["set", *argv, "--wait", "3"])
+                code = 0
+            except SystemExit as e:
+                code = e.code
+        self.assertEqual(code, expect, out.getvalue())
+        self.assertNotIn("SECRETKEY123", out.getvalue())
+        return out.getvalue()
+
+    def test_sets_title_with_version_check(self):
+        out = self.set("smith2021", "title", "Clean title")
+        self.assertIn("'Ready paper' -> 'Clean title'", out)
+        self.assertIn("synced to Zotero desktop", out)
+        method, path, headers, body = self.web[-1]
+        self.assertEqual((method, path), ("PATCH", "/users/42/items/A1"))
+        self.assertEqual(headers["If-Unmodified-Since-Version"], "7")
+        self.assertEqual(json.loads(body), {"title": "Clean title"})
+
+    def test_sets_creator(self):
+        out = self.set("A1", "creator:1", "Cobos Freire, Teofilo")
+        self.assertIn("'Freire, Teofilo Cobos' -> 'Cobos Freire, Teofilo'", out)
+        sent = json.loads(self.web[-1][3])["creators"][0]
+        self.assertEqual((sent["lastName"], sent["firstName"], sent["creatorType"]),
+                         ("Cobos Freire", "Teofilo", "author"))
+
+    def test_refusals(self):
+        self.assertIn("excluded", self.set("doe2022", "title", "x", expect=1))
+        self.assertIn("not a text field", self.set("smith2021", "collections", "x", expect=1))
+        self.assertIn("creator:3 does not exist", self.set("smith2021", "creator:3", "A, B", expect=1))
+        self.assertIn('"Last, First"', self.set("smith2021", "creator:1", "Nocomma", expect=1))
+        self.assertIn("no item", self.set("nobody2000", "title", "x", expect=1))
+        self.assertFalse([w for w in self.web if w[0] == "PATCH"])
+
+    def test_changed_meanwhile_is_refused(self):
+        self.version = 8
+        real = zot.Web.call
+
+        def stale(web, method, path, *a, **k):          # read at version 7, then someone else edits
+            status, body = real(web, method, path, *a, **k)
+            if method == "GET":
+                got = json.loads(body)
+                got["version"] = 7
+                body = json.dumps(got).encode()
+            return status, body
+        zot.Web.call = stale
+        try:
+            self.assertIn("changed in Zotero", self.set("smith2021", "title", "x", expect=1))
+        finally:
+            zot.Web.call = real
 
 
 if __name__ == "__main__":

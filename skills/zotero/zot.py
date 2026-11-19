@@ -24,12 +24,13 @@ file, and every item is classified before anything may be sent anywhere:
   pending   submitted for conversion but not collected yet; `fetch-pending`
 
 Commands: config, setup, doctor, collections, items, status, dry-run,
-index, fetch-pending, notes, resolve, record, attach, approve, unapprove.
+index, fetch-pending, notes, resolve, record, attach, check, set, approve,
+unapprove.
 
 Conversion is done by the pdf-convert skill (pdfc.py), called as a separate
 program; its page limit, budget, cache and no-retry rules all still apply. Run `zot.py <command> -h` for options.
 
-The Zotero web API key (for write commands such as `attach`) is read from
+The Zotero web API key (for write commands such as `attach` and `set`) is read from
 $ZOTERO_API_KEY, else the file named in the config. This script never prints it.
 """
 from __future__ import annotations
@@ -816,6 +817,232 @@ def cmd_attach(args) -> None:
     sys.exit(3)
 
 
+# --------------------------------------------------- metadata check and fix
+
+MARKUP = re.compile(r"</?[a-zA-Z][^>]*>|&(?:amp|lt|gt|quot|#\d+);")
+VENUE_FIELDS = {"journalArticle": ("publicationTitle",),
+                "conferencePaper": ("proceedingsTitle", "conferenceName")}
+
+
+def norm_title(t: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", MARKUP.sub("", t).lower()).strip()
+
+
+def person(c: dict) -> str:
+    if c.get("name"):
+        return c["name"]
+    return ", ".join(x for x in (c.get("lastName", ""), c.get("firstName", "")) if x)
+
+
+def library_items(cfg: dict) -> tuple[Local, Tree, list[dict]]:
+    api = Local(cfg)
+    items = [it for it in api.get("items/top")
+             if it.get("data", {}).get("itemType") not in ("attachment", "note", "annotation")]
+    return api, Tree(api.get("collections")), items
+
+
+def pick_items(cfg: dict, tree: Tree, items: list[dict], specs: list[str],
+               collections: bool = True) -> list[dict]:
+    """Items named by item key or citation key, or (with `collections`) every item in a collection."""
+    by_key = {it["key"]: it for it in items}
+    out: dict[str, dict] = {}
+    for s in specs:
+        hits = [by_key[s]] if s in by_key else [it for it in items if citekey(it["data"]) == s]
+        if not hits and collections and tree.matches(s):
+            keys = set(tree.descendants(tree.resolve(s)))
+            hits = [it for it in items if keys & set(it["data"].get("collections", []))]
+        if not hits:
+            die(f"no item with key or citation key {s!r}" + (" and no such collection" if collections else ""))
+        for it in hits:
+            out.setdefault(it["key"], it)
+    return list(out.values())
+
+
+def blocked_by(cfg: dict, tree: Tree, d: dict) -> list[str]:
+    ex_tags = {t.lower() for t in cfg["scope"]["exclude_tags"]}
+    banned = tree.excluded(cfg["scope"]["exclude_collections"])
+    out = sorted({t.get("tag", "").lower() for t in d.get("tags", [])} & ex_tags)
+    if any(c in banned for c in d.get("collections", [])):
+        out.append("exclude collection")
+    return out
+
+
+def review(d: dict, has_pdf: bool | None, dups: list[str]) -> tuple[list[str], list[str]]:
+    """(problems to fix, notes) for one item's metadata. has_pdf None: not looked at."""
+    fix, note = [], []
+    t = d.get("title") or ""
+    if not t.strip():
+        fix.append("title: empty")
+    else:
+        if MARKUP.search(t):
+            fix.append("title: contains markup (HTML/JATS tags or entities)")
+        if t != t.strip() or re.search(r"\s{2,}|\n", t):
+            fix.append("title: stray whitespace or line breaks")
+        if len(t) > 20 and t.isupper():
+            fix.append("title: all capitals")
+    creators = d.get("creators") or []
+    if not creators:
+        fix.append("creators: none")
+    for i, c in enumerate(creators, 1):
+        if c.get("name"):
+            continue
+        first = (c.get("firstName") or "").strip()
+        if MARKUP.search(first + (c.get("lastName") or "")):
+            fix.append(f"creator {i} {person(c)!r}: contains markup")
+        if not first:
+            fix.append(f"creator {i} {person(c)!r}: no first name")
+        elif len(first.split()) >= 3:
+            note.append(f"creator {i} {person(c)!r}: three or more given names; a compound surname split wrong?")
+    if not year(d):
+        fix.append("date: no year")
+    doi = (d.get("DOI") or "").strip()
+    if doi and not re.fullmatch(r"10\.\d+/\S+", doi):
+        fix.append(f"DOI: {doi!r} is not a bare DOI (10.xxxx/...)")
+    if not citekey(d):
+        fix.append("citation key: none (generate it in Zotero)")
+    fix.extend(f"possible duplicate of {k}" for k in dups)
+    venues = VENUE_FIELDS.get(d.get("itemType", ""), ())
+    if venues and not any((d.get(f) or "").strip() for f in venues):
+        note.append(f"venue: {' / '.join(venues)} empty")
+    if not public_id(d):
+        note.append("no DOI or arXiv id")
+    if not (d.get("abstractNote") or "").strip():
+        note.append("abstract: none")
+    if has_pdf is False:
+        note.append("PDF: none on this machine")
+    return fix, note
+
+
+def cmd_check(args) -> None:
+    """Pull the metadata of the named items so an agent can review it, and flag what looks wrong."""
+    cfg = load_config(required=False)
+    api, tree, items = library_items(cfg)
+    specs = args.item or cfg["scope"]["collections"]
+    if not specs:
+        die("name item keys, citation keys or a collection, or set [scope] collections in the config")
+    by_doi: dict[str, list[str]] = {}
+    by_title: dict[str, list[str]] = {}
+    for it in items:
+        d = it["data"]
+        if (d.get("DOI") or "").strip():
+            by_doi.setdefault(d["DOI"].strip().lower(), []).append(it["key"])
+        if norm_title(d.get("title") or ""):
+            by_title.setdefault(norm_title(d["title"]), []).append(it["key"])
+    rows = []
+    for it in pick_items(cfg, tree, items, specs):
+        d, key = it["data"], it["key"]
+        blocked = blocked_by(cfg, tree, d)
+        has_pdf = None
+        if not blocked:
+            has_pdf = any(ch.get("data", {}).get("contentType") == "application/pdf"
+                          and ch["data"].get("linkMode") != "linked_url" and api.file_path(ch["key"])
+                          for ch in api.get(f"items/{key}/children"))
+        dups = set(by_doi.get((d.get("DOI") or "").strip().lower(), []) if d.get("DOI") else [])
+        dups |= set(by_title.get(norm_title(d.get("title") or ""), []))
+        fix, note = review(d, has_pdf, sorted(dups - {key}))
+        venue = next((d[f] for f in VENUE_FIELDS.get(d.get("itemType", ""), ()) if d.get(f)), "") \
+            or d.get("publicationTitle") or d.get("proceedingsTitle") or d.get("bookTitle") or ""
+        rows.append({"key": key, "citekey": citekey(d), "type": d.get("itemType", ""), "year": year(d),
+                     "title": d.get("title", ""), "creators": [person(c) for c in d.get("creators", [])],
+                     "venue": venue, "id": public_id(d), "abstract_chars": len((d.get("abstractNote") or "").strip()),
+                     "pdf": has_pdf, "excluded": blocked,
+                     "collections": sorted(tree.path(c) for c in d.get("collections", []) if c in tree.name),
+                     "tags": sorted(t.get("tag", "") for t in d.get("tags", [])),
+                     "problems": fix, "notes": note})
+    rows.sort(key=lambda r: (not r["problems"], (r["citekey"] or r["title"]).lower()))
+    if args.json:
+        json.dump(rows, sys.stdout, indent=1, ensure_ascii=False)
+        print()
+    else:
+        for r in rows:
+            print(f"{r['key']}  {r['citekey'] or '(no citation key)'}  {r['type']}  {r['year']}")
+            creators = "; ".join(r["creators"][:4]) + (f"; … ({len(r['creators'])})" if len(r["creators"]) > 4 else "")
+            for label, value in (("title", repr(r["title"])), ("creators", creators), ("venue", r["venue"]),
+                                 ("id", r["id"] or ""),
+                                 ("abstract", f"{r['abstract_chars']} chars" if r["abstract_chars"] else "none"),
+                                 ("PDF", "excluded, not looked at" if r["excluded"] else "yes" if r["pdf"] else "none"),
+                                 ("in", "; ".join(r["collections"])), ("tags", ", ".join(r["tags"]))):
+                if value:
+                    print(f"  {label:<9}{value}")
+            for p in r["problems"]:
+                print(f"  ! {p}")
+            for n in r["notes"]:
+                print(f"  - {n}")
+            print()
+        bad = sum(bool(r["problems"]) for r in rows)
+        print(f"{len(rows)} item(s), {bad} with problems (!), notes (-) are for information.")
+    if any(r["problems"] for r in rows):
+        sys.exit(2)
+
+
+def cmd_set(args) -> None:
+    """Change one field of one item through the web API, then wait for the desktop copy to match."""
+    cfg = load_config()
+    api, tree, items = library_items(cfg)
+    hits = pick_items(cfg, tree, items, [args.item], collections=False)
+    if len(hits) != 1:
+        die(f"{len(hits)} items have citation key {args.item!r}; name it by item key")
+    key = hits[0]["key"]
+    blocked = blocked_by(cfg, tree, hits[0]["data"])
+    if blocked:
+        die(f"{args.item} is excluded ({', '.join(blocked)}); edit it in Zotero yourself")
+    value = sys.stdin.read() if args.value == "-" else args.value
+    value = value.strip()
+
+    web = Web(cfg)
+    status, body = web.call("GET", f"items/{key}")
+    if status != 200:
+        die(f"cannot read {key} from the web API (HTTP {status}); has Zotero synced it?")
+    got = json.loads(body)
+    data, version = got["data"], got["version"]
+    m = re.fullmatch(r"creator:(\d+)", args.field)
+    if m:
+        creators = [dict(c) for c in data.get("creators", [])]
+        i = int(m.group(1)) - 1
+        if not 0 <= i < len(creators):
+            die(f"{key} has {len(creators)} creator(s); creator:{i + 1} does not exist")
+        last, sep, first = value.partition(",")
+        if not sep or not last.strip() or not first.strip():
+            die('a creator is given as "Last, First"')
+        old = person(creators[i])
+        new_c = {"creatorType": creators[i].get("creatorType", "author"),
+                 "lastName": last.strip(), "firstName": first.strip()}
+        if new_c == creators[i]:
+            print(f"{key} creator:{i + 1} is already {old!r}; nothing to do")
+            return
+        creators[i] = new_c
+        patch, shown, want = {"creators": creators}, (old, person(new_c)), creators
+        field = "creators"
+    else:
+        field = args.field
+        if field in ("key", "version", "itemType", "dateAdded", "dateModified", "parentItem") \
+                or not isinstance(data.get(field), str):
+            die(f"{field!r} is not a text field of this {data.get('itemType')} item")
+        if data[field] == value:
+            print(f"{key} {field} is already that value; nothing to do")
+            return
+        patch, shown, want = {field: value}, (data[field], value), value
+    status, body = web.call("PATCH", f"items/{key}", json.dumps(patch).encode(),
+                            {"Content-Type": "application/json", "If-Unmodified-Since-Version": str(version)})
+    if status == 412:
+        die(f"{key} changed in Zotero since it was read; run the command again")
+    if status != 204:
+        die(f"Zotero refused the change (HTTP {status}): {body[:300].decode('utf-8', 'replace')}")
+    print(f"{key} {args.field}: {shown[0]!r} -> {shown[1]!r}", flush=True)
+
+    deadline = time.monotonic() + args.wait
+    while True:
+        local = api.get(f"items/{key}").get("data", {})
+        if local.get(field) == want:
+            print("synced to Zotero desktop")
+            return
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(3)
+    print("saved online; Zotero desktop has not synced it yet (it will at its next sync)", file=sys.stderr)
+    sys.exit(3)
+
+
 def cmd_record(args) -> None:
     """Finalize a conversion done by hand, so status can report done/stale."""
     cfg = load_config()
@@ -1128,6 +1355,18 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--wait", type=int, default=120, help="seconds to wait for Zotero desktop to sync it (default 120)")
     s.add_argument("--force", action="store_true", help="attach even if the item already has a PDF")
     s.set_defaults(fn=cmd_attach)
+
+    s = sub.add_parser("check", help="show items' metadata and flag what looks wrong (exit 2 if anything to fix)")
+    s.add_argument("item", nargs="*", help="item keys, citation keys or collections (default: the scope)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_check)
+
+    s = sub.add_parser("set", help="change one field of one item (web API), then verify it synced")
+    s.add_argument("item", help="item key or citation key")
+    s.add_argument("field", help='a text field such as title, abstractNote, date, DOI; or creator:N for "Last, First"')
+    s.add_argument("value", help="the new value; - reads it from stdin (for abstracts)")
+    s.add_argument("--wait", type=int, default=60, help="seconds to wait for Zotero desktop to sync it (default 60)")
+    s.set_defaults(fn=cmd_set)
 
     for name in ("approve", "unapprove"):
         s = sub.add_parser(name, help=f"{name} held items by item key")

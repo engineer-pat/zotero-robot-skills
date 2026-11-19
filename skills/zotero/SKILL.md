@@ -52,6 +52,8 @@ These protect unpublished and restricted documents. They are not optional.
 | `resolve CITEKEY` | JSON: item key, title, PDF path on disk, output folder, `zotero://` link. Excluded items return no path. |
 | `record CITEKEY` | After converting one paper by hand: frontmatter, `meta.json`, manifest line, so `status` reports `done` (or `stale` if the PDF later changes). |
 | `attach CITEKEY PDF` | Uploads a PDF the user obtained to that existing item as a stored attachment (web API, counts against the user's Zotero storage), then waits for Zotero desktop to sync it and checks its SHA-256. Refuses excluded items, non-PDF files, and items that already have a PDF (`--force`). Exit 3: uploaded, not synced to this machine yet. |
+| `check [ITEM\|COLLECTION...]` | Pulls citation key, title, creators, venue, DOI, abstract length, PDF, collections and tags for the named items (item keys, citation keys or collections; default the scope) and flags what looks wrong: markup or stray whitespace in titles, missing first names, malformed DOIs, missing citation keys, possible duplicates. `!` lines need fixing, `-` lines are notes. Exit 2 if any `!`. `--json`. |
+| `set ITEM FIELD VALUE` | Changes one text field (`title`, `abstractNote`, `date`, `DOI`, …) or one creator (`creator:N "Last, First"`) through the web API, refusing if the item changed since it was read, then waits for Zotero desktop to sync it. `-` as VALUE reads stdin. Refuses excluded items. Exit 3: saved, not synced yet. |
 | `approve KEY...` / `unapprove KEY...` | Release or re-hold items by Zotero item key. |
 | `config [show\|init\|path]` | Show, create or locate the per-machine config. |
 | `setup` | Stores the web API key (hidden input). For the user's own terminal. |
@@ -142,8 +144,48 @@ is a separate step the user approves). Never delete the temporary download until
 exits 0 or 3. If it fails after creating the attachment, it names the empty attachment for
 the user to delete in Zotero; do not retry blindly.
 
+## After any import or attach: check, then fix
+
+Run `zot.py check` on what was just added (the collection it went into, or the citation keys)
+and read the whole output yourself. The flags catch the mechanical faults; some faults only a
+reader catches, such as a compound surname split into the wrong fields ("Freire, Teofilo Cobos"
+for Teofilo Cobos Freire). Fix with `set`, one field at a time, and run `check` again:
+
+```bash
+zot.py check "Research/_inbox"
+zot.py set ABCD1234 title "… in the Si/SiO2 Network"          # was "Si/SiO <sub>2</sub>", from Crossref
+zot.py set smith2021 creator:1 "Cobos Freire, Teofilo"
+oa.py work <DOI> --json | <extract .abstract> | zot.py set smith2021 abstractNote -
+```
+
+Take values from a source (the publisher page, OpenAlex, Crossref), never from memory. Changing
+an author does not change the citation key; tell the user, who decides whether to refresh it in
+Better BibTeX.
+
+## Papers from the user's signed-in browser
+
+For a paywalled paper the user has access to, when a browser automation tool is connected to
+the user's own browser. Show the list, the count and a time estimate (about a minute a paper)
+first. Read pages as text, not screenshots. Per paper:
+
+1. Open `https://doi.org/<DOI>`.
+2. In that page, one script: wait for the page, check it shows institutional access (IEEE Xplore:
+   "Access provided by: …"; "Institutional Sign In" alone means signed out), fetch the PDF with
+   the page's own session (IEEE: `/stampPDF/getPDF.jsp?tp=&arnumber=<n>&ref=`), check the first
+   bytes are `%PDF`, and save it through a blob link, which is the browser's own download.
+   Several papers on one site can be fetched from one page.
+3. Check the file landed in the downloads folder straight away, move it to a temporary
+   folder, and check its header again. Then `attach` (item already in Zotero) or the
+   save-papers-to-zotero skill with `--pdf-file` (new item), then `check`.
+
+Stop and hand over at a password, second-factor, CAPTCHA or access-denied page; never retry past
+one, never type credentials, never read or export cookies. Clicking "Institutional Sign In" and
+following the redirects is fine when the user allows it. If the fetch succeeds but no file lands,
+the browser is blocking repeated downloads from the site: ask the user to allow automatic
+downloads for it (a browser setting, theirs to change).
+
 ## Not here yet
 
-Other write commands (add by DOI, file into subcollections, attach the markdown to the item)
+Other write commands (add by DOI, file into subcollections, attach the markdown to the item, delete)
 are planned and will use the web API key. Until then, tell the user what to add or move and
 let them do it in Zotero.

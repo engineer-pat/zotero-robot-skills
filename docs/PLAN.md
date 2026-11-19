@@ -45,7 +45,7 @@ pdf-convert, figure-craft), which stay unchanged.
 | 1 | `zotero` skill, read-only: config, doctor, collections, status, dry-run, resolve, record, approve | verified against Zotero 10.0.7 on 2026-11-18 (results below); 22 tests pass |
 | 2 | Batch conversion: `index` (estimate, confirm, convert, frontmatter, `meta.json`, manifest), `fetch-pending`, generated collection notes | written; 20 tests pass against fakes; **not yet run for real** |
 | 3 | Paper cards (schema, validator), collection overview notes | to do |
-| 4 | Zotero writes: add by DOI, file into subcollections, optional markdown attachment | `attach CITEKEY PDF` done 2026-11-19 (2 tests; first real run on Morath, verified); rest to do |
+| 4 | Zotero writes: add by DOI, file into subcollections, optional markdown attachment | `attach CITEKEY PDF` done 2026-11-19 (2 tests; first real run on Morath, verified); `check` (metadata review, exit 2 on problems) and `set` (one field or creator, web API, version-checked, waits for sync) done 2026-11-19 (7 tests; used on the trial items: Cobos Freire's name, both abstracts from OpenAlex); 32 tests pass; rest to do |
 | 5 | Citation check for LaTeX drafts, reference resolution through OpenAlex, watch list | sample watch prompt is in the README; rest to do |
 | 6 | Pull request upstream: `zotero` skill, README/installer changes, arXiv-source option | to do |
 | 7 | Research to Zotero: shortlist from OpenAlex, open-access PDFs through the web API, paywalled papers through the owner's browser and the Zotero Connector | designed (below); browser loop trialled on 3 IEEE papers 2026-11-19 |
