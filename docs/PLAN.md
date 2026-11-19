@@ -279,7 +279,15 @@ refuses excluded items, non-PDFs, items with a PDF; leaves and names an empty at
 later step fails). save-papers-to-zotero stays for papers not yet in the library.
 
 Trial, revised: Morath through `attach`; two new closed IEEE papers, chosen by the owner from
-an OpenAlex shortlist, through save-papers-to-zotero into `PhD/AFRL/_inbox` (to create).
+an OpenAlex shortlist, through save-papers-to-zotero into `PhD/AFRL/_inbox`.
+
+State at handoff (2026-11-19): save-papers-to-zotero installed as its own skill, clone at
+`~/Desktop/save-papers-to-zotero` pinned to `5fe2e34`, junction in `~\.claude\skills`.
+`PhD/AFRL/_inbox` exists (`SKQTGZQB`, empty). Owner's topic for the two new papers: DFT and
+ML-potential modelling of silicon oxide defects (bulk, Si/SiO2 interface, oxide); seed paper
+Erhard et al. 2024, "Modelling atomic and nanoscale structure in the silicon–oxygen system
+through active machine learning" (OpenAlex `W4392348184`). No OpenAlex key on this machine
+(1,000 credits/day).
 
 Open items from the Linux session: first single-paper conversion not yet run
 (`dengDeepLevelTransient2024` suggested); duplicates to clean up in Zotero (`ochoa...2022a`,
